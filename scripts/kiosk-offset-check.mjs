@@ -1,0 +1,21 @@
+import { chromium } from "@playwright/test";
+const browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
+const page = browser.contexts().flatMap(c => c.pages()).find(p => p.url().includes("127.0.0.1:8765"));
+const res = await page.evaluate(async (waitMs) => {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  await new Promise(r => setTimeout(r, waitMs));
+  const rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+  const chunks = []; rec.ondataavailable = e => chunks.push(e.data);
+  const stopped = new Promise(r => (rec.onstop = r));
+  rec.start(); await new Promise(r => setTimeout(r, 3000)); rec.stop(); await stopped;
+  const blob = new Blob(chunks, { type: "audio/webm" });
+  const ctx = new AudioContext(); const buf = await ctx.decodeAudioData(await blob.arrayBuffer()); await ctx.close();
+  const fd = new FormData(); fd.append("file", blob, "seg.webm"); fd.append("response_format", "verbose_json");
+  const t0 = performance.now();
+  const r = await fetch("http://100.81.33.83:8770/v1/audio/transcriptions", { method: "POST", body: fd });
+  const j = await r.json();
+  stream.getTracks().forEach(t => t.stop());
+  return { waitMs, blobBytes: blob.size, browserDecodedS: buf.duration, serverDurationS: j.duration, roundTripMs: Math.round(performance.now() - t0), text: j.text };
+}, 20000);
+console.log(JSON.stringify(res));
+await browser.close();
