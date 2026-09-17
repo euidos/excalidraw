@@ -8,6 +8,9 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 30_000 },
   workers: 1,
+  // The STT server is real: a ~1 s segment occasionally decodes to an empty transcript, which the app then
+  // (correctly) treats as "nothing was said". One retry keeps that server-side nondeterminism from reading
+  // as a product failure; a genuine defect fails both attempts.
   retries: 0,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {

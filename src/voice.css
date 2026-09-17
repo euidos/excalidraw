@@ -1,0 +1,210 @@
+/* Voice tool button + settings panel. Colours come from Excalidraw's own CSS variables so both themes work. */
+
+/*
+ * Page reset (the vanilla excalidraw-app ships the same one). Without it the browser's default 8px body margin
+ * makes the document taller than the viewport, so tapping a toolbar button scrolls the page and Excalidraw's
+ * cached appState.offsetTop flips mid-drag — every shape drawn right after a toolbar tap lands 8px off.
+ */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.voice-tool {
+  position: relative;
+}
+
+.voice-tool .ToolIcon__icon {
+  position: relative;
+  cursor: pointer;
+  color: var(--color-on-surface);
+}
+
+/* Armed mirrors the library's `.ToolIcon_type_radio:checked + .ToolIcon__icon` look. */
+.voice-tool--armed .ToolIcon__icon {
+  background: var(--color-surface-primary-container);
+  color: var(--color-on-primary-container);
+}
+
+.voice-tool__badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.voice-tool__badge:empty {
+  display: none;
+}
+
+.voice-tool__dot {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e03131;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.voice-tool--recording .voice-tool__dot {
+  opacity: 1;
+  animation: voice-pulse 1s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.35;
+  }
+}
+
+/* Mic unavailable: dim the icon and draw a slash across it. */
+.voice-tool--mic-missing .ToolIcon__icon {
+  opacity: 0.5;
+}
+
+.voice-tool--mic-missing .ToolIcon__icon::after {
+  content: "";
+  position: absolute;
+  left: 15%;
+  right: 15%;
+  top: 50%;
+  height: 2px;
+  background: currentColor;
+  transform: rotate(-45deg);
+  pointer-events: none;
+}
+
+.voice-retry .ToolIcon__icon {
+  cursor: pointer;
+  color: #e8590c;
+}
+
+.voice-retry[hidden] {
+  display: none;
+}
+
+/* Optional level meter the host app may render next to the button. */
+.voice-level {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  transition: width 100ms linear;
+}
+
+/* ---- settings panel ---- */
+
+.voice-settings {
+  position: fixed;
+  top: 84px;
+  right: 16px;
+  z-index: 100;
+  width: calc(100vw - 32px);
+  max-width: 360px;
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--color-surface-low, #fff);
+  color: var(--color-on-surface, #1b1b1f);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voice-settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.voice-settings__title {
+  font-weight: 700;
+}
+
+.voice-settings__close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px;
+}
+
+.voice-settings__row {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-settings__row input,
+.voice-settings__row select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 7px;
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+
+.voice-settings__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.voice-settings__actions button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.voice-settings__actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.voice-settings__done {
+  margin-left: auto;
+}
+
+.voice-settings__result {
+  font-size: 12px;
+  color: #2f9e44;
+}
+
+.voice-settings__result--bad {
+  color: #e03131;
+}
