@@ -22,11 +22,26 @@ describe("isHallucination — what whisper invents out of near-silence", () => {
     expect(isHallucination(text)).toBe(false);
   });
 
-  it("KNOWN GAP: 'Subtitles by amara.org' escapes — it is longer than either half of the blocklist + 3", () => {
-    // Both halves are listed ("subtitles by", "amara.org") but the phrase whisper actually emits joins them, and
-    // the length guard in contracts-capture.ts only tolerates 3 extra characters. Pinned here so the behaviour is
-    // a decision, not a surprise; fixing it means editing the blocklist, which is contract territory.
-    expect(isHallucination("Subtitles by amara.org")).toBe(false);
+  // Round 2 pinned these as a KNOWN GAP: both halves were listed ("subtitles by", "amara.org") but the phrase
+  // whisper actually emits joins them, and the fuzzy arm only tolerates 3 extra characters. Round 3 lists the
+  // joined phrases themselves, so the gap is closed by the blocklist rather than by loosening the match.
+  it.each([
+    ["Subtitles by amara.org"],
+    ["subtitles by amara.org."],
+    ["Subtitles by the Amara.org community"],
+    ["시청해 주셔서 감사합니다"],
+    ["자막 by"],
+  ])("drops the near-silence filler %j", (text) => {
+    expect(isHallucination(text)).toBe(true);
+  });
+
+  it("matches a whole normalised text that differs from an entry only in spacing", () => {
+    // Whisper is inconsistent about Korean spacing, and spacing is not a word boundary there.
+    expect(isHallucination("시청해주셔서 감사합니다")).toBe(true);
+    expect(isHallucination("시청해 주 셔서 감사 합니다")).toBe(true);
+    expect(isHallucination("thankyou")).toBe(true);
+    // …but it is equality, not a substring: a real sentence that merely contains one is kept.
+    expect(isHallucination("자막 by 한효정이 만든 회의록")).toBe(false);
   });
 
   it("only forgives a blocklisted phrase up to three extra characters of noise", () => {

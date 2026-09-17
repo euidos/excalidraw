@@ -1,7 +1,7 @@
-# RETRO — 0.1.0 voice-areas (current, after round 2)
+# RETRO — 0.1.0 voice-areas (current, after round 3)
 
-One document, rewritten each round. Round-1 lessons that still bite stay below in their current form; the ones a
-round-2 gate actually closed are in **Closed** at the end with the gate that closed them.
+One document, rewritten each round. Lessons that still bite stay below in their current form; the ones a later
+gate actually closed are in **Closed** at the end with the gate that closed them.
 
 Round-2 cycle shape: DESIGN R1–R7 + `src/contracts-capture.ts` made live → 5 builders (capture/vad, assign, fit,
 ui-persist-settings, controller) → integrator (App.tsx, `audio.ts` deleted) → e2e driver (**22/22**, retries 0,
@@ -11,6 +11,12 @@ real STT) → 2 review lenses (**both `fail`, 2 blockers**) → post-review fix 
 Outcome to hold on to: **the board went green, a lens drove the same shipped bundle by hand and found a blocker,
 the board went green again.** Round 1 ended the same way with four lenses. That repetition — not any single bug —
 is the finding of this round.
+
+Round-3 cycle shape (small round, one fixer): six items drained straight off round 2's **open-rows table** — N12
+one scale, N10 rendered drop, N11 recovery, the amara.org blocklist gap, dead `FailedEntry` pruning, the STT
+upload filename — then a re-drive. Result: unit **88 → 109**, e2e **23/23** (retries 0, real STT, `/health`
+answered `{ok:true, model:large-v3-turbo, warm:true}` before the run), `npm run build` clean. No new defect class
+was discovered; every item was already written down. That is the finding of round 3 (L9).
 
 ## What earned reuse
 
@@ -36,9 +42,9 @@ is the finding of this round.
   only fires when an unassigned utterance is open at the tick, and no timed gate ever arranged that (`[].every()`
   is vacuously true, giving the same answer either way); the capture brick needs a mic to fail and then recover,
   and no case ever recovers a failed mic.
-- **`VoiceStatus.dropped` / `lastDropped`.** Added so a filtered transcript is not silent; `toolbar.tsx` renders
-  neither, so on the wall panel a filtered transcript and a silent room still look identical. A channel with no
-  rendered sink is a private field with extra steps (L2).
+- **`VoiceStatus.dropped` / `lastDropped`.** Added in round 2 so a filtered transcript is not silent; nothing
+  rendered them, so on the wall panel a filtered transcript and a silent room looked identical. A channel with no
+  rendered sink is a private field with extra steps. *(Closed by N10 in round 3 — see Closed.)*
 - **Test parameters chosen to make a gate writable.** N2a pins `preRollMs: 0`; G4d and G5c swapped fixtures
   because the VAD seeds its floor from the first 200 ms; every test forces `warmMicOnBoot: false`. Each is a place
   the harness bent around the product, and one of them hides a live defect (L4).
@@ -58,14 +64,6 @@ path returned a cached `mic`.
 Gate (N9): every predicate whose false branch deletes, discards, refuses or restores is extracted as a pure
 exported function and gated either by its full truth table or by a property test asserting agreement with the
 module that owns the rule. A predicate that exists only inside an async handler is not gated.
-
-**L2 — A failure channel is not done until something renders it.**
-Round 1: mic errors died in a private field. Round 2 built the channel (`onMicChange`, typed `MicState`,
-`status.lastError`, proven by N3) and then repeated the failure one level up: `dropped`/`lastDropped` reach
-`VoiceStatus` and stop there; a target stuck at "⚠ STT" is never discarded or surfaced beyond a count; an evicted
-`FailedEntry` leaves `entry.failed = true` with no retry path and no way to clear it.
-Gate: every field of `VoiceStatus` has either a rendered surface with an e2e assertion, or an EVIDENCE row saying
-"debug-only, not rendered". No third option.
 
 **L3 — Deferred work keyed to a user event needs a barrier, and the barrier must cover every consumer of the
 deferred fact, not just the producer.**
@@ -98,26 +96,18 @@ lesson and round 2 reproduced it, which means the memo step, not the builders, i
 Gate: the memo step fails if any builder risk, lens finding or fixed defect from the round lacks a row — met,
 unmet, untested or accepted. (Enforced this round: the rows are written below in EVIDENCE.local.md.)
 
-**L6 — Contracts type shapes, not units, scales or lifetimes — so every seam is still unowned.**
+**L6 — Contracts type shapes, not units, scales or lifetimes — so every seam is still unowned.** *(scale half
+closed by N12 in round 3; lifetime half still open.)*
 Round 1: who converts screen→scene, who may resize the user's shape, who reports a dead mic. Round 2 answered all
-three and opened new ones in the same class: `capture.onLevel` emits RMS×4 clamped 0..1 while `settings-panel.tsx`
-draws both the bar and the VAD threshold marker against `VAD_MAX = 0.06` on the raw RMS scale, so the founder
-cannot set a threshold by eye against a bar that reads ~4× high (measured live: near-silence 0.0045 vs threshold
-0.012); `utteranceSession` is written and never deleted, so every Session a kiosk ever opened is retained for the
-life of the page; `fit.discard`/`markFailed` restore the drawn geometry unconditionally, with no way to tell
-"grown by our placeholder" from "resized by the user".
-Gate: every numeric crossing a module boundary declares unit AND scale in the contract; every map keyed by a
-transient id declares who deletes the entry; any UI drawing two numbers on one axis has a test that they share a
-scale.
-
-**L7 — A module state that blocks the product needs a recovery gate, not only an entry gate.**
-N3 proved a denied mic refuses to arm. Nothing proved it ever un-refuses. `prepare()` short-circuited on a cached
-stream+context and returned the cached `mic`, so the moment `mic` latched to "error" — which a still-suspended
-AudioContext did after 500 ms, and a track `mute` with no `unmute` did too — the tool refused to arm for the life
-of the page. On a keyboardless wall panel whose only affordance is the latch button, that is unrecoverable.
-Fixed and unit-gated; the class is not.
-Gate: for every state a module can enter that makes the product refuse to work, an automated case enters it,
-clears the cause, and asserts the product works again without a reload.
+three and opened new ones in the same class. Round 3 closed the scale one — `capture.onLevel` and
+`capture.noiseFloor` are raw RMS, `src/level.ts` is the single display mapping the panel and the toolbar both draw
+through — and closed one lifetime one, `pruneFailed()` naming the deleter for the `FailedEntry` map. What remains
+is the same class untouched: `utteranceSession` is written and never deleted, so every Session a kiosk ever opened
+is retained for the life of the page; `fit.discard`/`markFailed` restore the drawn geometry unconditionally, with
+no way to tell "grown by our placeholder" from "resized by the user".
+Gate: every map keyed by a transient id declares who deletes the entry, and a unit case proves the entry is gone
+after its key dies. (`test/unit/controller.test.ts` "a failed entry whose shape has left the scene is pruned" is
+the shape to copy.)
 
 **L8 — A capture path proven by construction is not proven.**
 Every capture claim entering integration was offline arithmetic plus a Chromium fake device: worklet path,
@@ -127,19 +117,34 @@ the suite had to force a cold mic and why the field's warm-mic behaviour has nev
 Gate: any audio-graph behaviour asserted this round is re-measured on the kiosk with a real microphone
 (`scripts/kiosk-mic-check.mjs` + a cold-start suspend probe) before its row moves off "untested".
 
+**L9 — "Accepted, not tested" is a deferral with no expiry, and round N's accepted row is round N+1's one-line
+fix.**
+Round 3 added zero new discoveries: all six items were already rows in EVIDENCE.local.md, four of them under
+*accepted* or *untested* rather than *unmet*. The costs were trivial once someone picked them up — the
+"Subtitles by amara.org" row, pinned in round 2 as a KNOWN GAP test with the note "fix is one
+`HALLUCINATION_BLOCKLIST` entry", was exactly that, and the level-scale row that had sat "owner unassigned" cost
+one new 100-line module. Meanwhile the label "accepted" was doing real damage: it reads like a decision, so a
+round planning itself off the table skips those rows and reaches for the *unmet* ones. L5 said every risk exits
+as a row; round 3 shows a row is not enough, because the word in the status column decides whether anyone ever
+reads it again.
+Gate (N14): a row may only say "accepted" with a named owner and the round number by which it is re-decided; a
+row whose fix is estimated at one contract line or one blocklist entry may not say "accepted" at all — it is
+*unmet*. Every round's planning step reads the open-rows table before the gate list.
+
 ## Anti-patterns (failure mode → catching gate)
 
 | Anti-pattern | Failure mode observed this round | Gate |
 | --- | --- | --- |
 | Nominal-path-only suite | Inverted supersede predicate green in 22/22; lens found it by hand in one session | N9 truth-table / property gate on destructive predicates |
 | Predicate buried in an async handler | `resolveTargets`'s comparison had no callable form until the fix extracted `isSuperseded` | Destructive rules are exported pure functions |
-| Channel without a sink | `dropped`/`lastDropped` in VoiceStatus, nothing renders them | Every status field: rendered + asserted, or a debug-only row |
+| Channel without a sink | `dropped`/`lastDropped` in VoiceStatus, nothing renders them | N10 — **closed round 3**: toast at the drop + `dropped N` in the tooltip |
 | Barriered producer, unbarriered consumer | Stroke registered at pointer-up; assignment finalises mid-stroke → orphan | N2e slow-stroke-across-deadline case |
 | Harness setting as a product parameter | N2a passes only at `preRollMs: 0`, which is the defect | Non-default setting → defect or accepted-risk row |
-| Latching failure state | `prepare()` returned cached "error" forever; 500 ms resume verdict never re-checked | Recovery case per blocking state, no reload |
+| Latching failure state | `prepare()` returned cached "error" forever; 500 ms resume verdict never re-checked | N11 — **closed round 3**: enter, clear, re-arm, no reload, no re-acquire |
 | Untriaged builder risk | Two lens blockers were already in builder risk lists | Every risk exits as a row |
-| Unit without a scale | onLevel RMS×4 drawn against a raw-RMS threshold marker | Contract declares unit + scale per crossing number |
-| Map that is never deleted from | `utteranceSession` retains every Session for the page's life | Every transient-keyed map names its deleter |
+| "Accepted" as a status | Four round-3 items sat under *accepted*/*untested*; each was a one-item fix | N14 — accepted needs an owner + a re-decide round; one-line fixes are *unmet* |
+| Unit without a scale | onLevel RMS×4 drawn against a raw-RMS threshold marker | N12 — **closed round 3**: raw RMS at the seam, `level.ts` the one display mapping |
+| Map that is never deleted from | `utteranceSession` retains every Session for the page's life (`failed` closed by `pruneFailed()`) | Every transient-keyed map names its deleter **and proves the entry is gone** |
 | Proof by construction | Whole capture path shipped on offline maths + a fake device | Kiosk re-measure before "met" |
 
 ## Next-cycle gates
@@ -148,10 +153,11 @@ Gate: any audio-graph behaviour asserted this round is re-measured on the kiosk 
   table or property gate against the module that owns the rule.
 - **N2e Pre-roll across a live stroke** — default `preRollMs`, speech then a stroke slower than the window →
   `orphans === 0`, words in that stroke's container. (Currently failing; see L3.)
-- **N10 Status rendering** — every `VoiceStatus` field is rendered and asserted, or carries a debug-only row.
-- **N11 Recovery** — every blocking module state is entered, cleared, and the product works again without reload.
-- **N12 Scale agreement** — the level meter and the VAD threshold marker are asserted to share one scale.
-- **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy on the panel.
+- **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy on the panel. **Still open
+  and now the only thing standing between the audio graph and "proven": round 3 removed a display gain from the
+  capture path and re-measured nothing on the panel.**
+- **N14 Accepted-row hygiene** — an "accepted" row carries an owner and the round it is re-decided in; a one-line
+  fix may not be accepted; planning reads the open-rows table first (L9).
 - Carried forward unchanged: **N8 evidence integrity** (retries 0, log at the cited path, every path verified).
 
 ## Vocabulary for the next agent
@@ -169,9 +175,52 @@ New this round:
   finding.
 - **latching state** — a module state that survives the condition that caused it. Needs a recovery gate.
 - **proof by construction** — offline arithmetic or a fake device standing in for the real surface. Not proof.
-- **scale (vs. unit)** — the multiplier on a number crossing a boundary. Contracts type neither today.
+- **scale (vs. unit)** — the multiplier on a number crossing a boundary. `contracts-capture.ts` now states both
+  for the level seam; nothing else does.
 
-## Closed (round-1 lessons a round-2 gate retired)
+New in round 3:
+
+- **open-rows table** — the *Open rows* section of EVIDENCE.local.md. It is the backlog, not an appendix: round 3
+  built nothing that was not already a row in it.
+- **accepted row** — a risk parked without a test. Only legitimate with an owner and a re-decide round (N14);
+  otherwise it is an *unmet* row wearing a decision's clothes (L9).
+
+## Closed (a later gate retired these)
+
+### Retired by round 3
+
+- **L2/round-2 — a failure channel is not done until something renders it.** Closed by **N10**: a drop now renders
+  at the moment it happens. `controller.ts` calls `api.setToast({message, duration: 2500})` with
+  `Filtered: "<text>"` for a blocklist hit and `No speech heard for that shape` for a non-orphan target that ends
+  with no text, and `buttonTitle(status)` puts `dropped N: "<last>"` in the mic button's tooltip.
+  Proof: `test/unit/controller.test.ts` → "a dropped transcript is rendered, not only counted (gate N10)" ("toasts
+  the filtered text so a blocklist hit cannot be mistaken for a silent room", "toasts a shape that ends with no
+  text at all", both asserting `duration === 2500`); `test/unit/toolbar.test.ts` → "buttonTitle — the toolbar says
+  how many transcripts were thrown away" (3 cases, incl. the failure line staying readable alongside it); real
+  surface `test/e2e/voice.spec.ts:462` G5b asserts `.Toast .Toast__message` reads "No speech heard for that shape"
+  (`test-results/last-run.txt:12`, test 9).
+  Residue: no e2e drives `status.dropped > 0` — the silence fixture never returns a transcript, so only a real
+  hallucination could raise it. The tooltip half is gated by the pure `buttonTitle`, which is the N9 shape.
+
+- **L7/round-2 — a module state that blocks the product needs a recovery gate, not only an entry gate.** Closed by
+  **N11**: every blocking capture state is now entered, cleared and re-armed in-process, with no reload and — the
+  part that matters on a wall panel — no re-acquisition of the stream.
+  Proof: `test/unit/capture.test.ts` → "N11(a) — an audio context that stays suspended past the window and then
+  comes back" ("goes error, then ok, and arms again without a reload", asserting `rig.calls === 1`), "N11(b) — a
+  muted track" ("errors on mute, clears on unmute, and starts again"), plus the two `prepare()` cases renamed
+  N11(c). Every case names its gate in its own title, so the gate is greppable from the suite.
+
+- **N12 scale agreement** (the scale half of L6). Closed: `LEVEL_GAIN` is deleted, `capture.onLevel` and
+  `capture.noiseFloor` emit raw RMS with unit and scale stated in `src/contracts-capture.ts` (0..1, speech
+  ~0.02–0.2), and `src/level.ts` owns the single display mapping (`meterPercent`, `effectiveThreshold`,
+  `meterScale`) that both `settings-panel.tsx` (bar + marker) and `toolbar.tsx` (`--voice-level`) draw through.
+  Proof: `test/unit/level.test.ts` → "meterScale — bar and marker are the same function of the same unit" (5
+  cases: bar == mark when the room sits on the line; bar/marker ordering matches the VAD's own decision; the
+  marker sits at the threshold the VAD really uses, not the setting alone; a property case agreeing with a live
+  `createVad` across 5 room floors; clamping) and `test/unit/capture.test.ts` → "N12 — the number the meter is
+  drawn from" (2 cases). Before/after reproduced: re-inserting the ×4 fails the two capture cases (0.4 vs 0.1).
+
+### Retired by round 2 (round-1 lessons)
 
 - **L4/round-1 — scene-px gesture constants.** Closed by **N5**: recognition thresholds are divided by
   `appState.zoom.value` at the controller's call site; a 300x160 screen-px oval yields 600x320 scene px at zoom

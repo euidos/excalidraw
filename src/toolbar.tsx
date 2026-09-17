@@ -20,6 +20,20 @@ const RETRY_SVG = `<svg aria-hidden="true" focusable="false" role="img" viewBox=
 
 const BASE_TITLE = "Voice area — hold F9 or tap to latch";
 
+/**
+ * The button's tooltip, as a pure function of the status — the wall panel has no console, so this string is the
+ * only place a failure or a silently filtered transcript can be read back. Round 2 counted `dropped` and rendered
+ * it nowhere (RETRO L2 / gate N10); exported so that rendering is gated without a DOM.
+ */
+export function buttonTitle(status: VoiceStatus): string {
+  const error = status.lastError ? `\n⚠ ${status.lastError}` : "";
+  const dropped =
+    status.dropped > 0
+      ? `\ndropped ${status.dropped}${status.lastDropped ? `: "${status.lastDropped}"` : ""}`
+      : "";
+  return `${BASE_TITLE}${error}${dropped}`;
+}
+
 function findToolbarRow(root: HTMLElement): HTMLElement | null {
   const rows = root.querySelectorAll<HTMLElement>(".App-toolbar .Stack_horizontal");
   for (const row of rows) {
@@ -178,13 +192,7 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       if (button.style.getPropertyValue("--voice-level") !== level) {
         button.style.setProperty("--voice-level", level);
       }
-      // The wall panel has no console; the tooltip is where a failure — and a silently filtered transcript — can
-      // be read back. `dropped` had no rendered sink at all before round 3 (RETRO L2 / gate N10).
-      const dropped =
-        status.dropped > 0
-          ? `\ndropped ${status.dropped}${status.lastDropped ? `: “${status.lastDropped}”` : ""}`
-          : "";
-      const title = `${BASE_TITLE}${status.lastError ? `\n⚠ ${status.lastError}` : ""}${dropped}`;
+      const title = buttonTitle(status);
       if (button.title !== title) {
         button.title = title;
       }

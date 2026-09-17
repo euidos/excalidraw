@@ -51,7 +51,8 @@ npm install     # dependencies + the Playwright browser download used by npm run
 6. **Placeholder states:** dashed outline + "·/··/···" means the transcript is on its way; **⚠ STT** in red means
    the server did not answer — the retry button (the circular arrow that appears next to the mic only when
    something has failed) re-sends everything that failed (the audio is kept in memory until the page reloads).
-   If you said nothing, the shape is kept and the placeholder disappears.
+   If you said nothing, the shape is kept, the placeholder disappears and a toast says **"No speech heard for
+   that shape"** — a drop leaves no ⚠ and no retry, so the toast is how you tell it from a shape still waiting.
    Delete a shape while it is pending and its transcript is dropped silently. If a reload catches a pending
    placeholder, the next boot sweeps those ghosts back to plain shapes.
 
@@ -67,7 +68,9 @@ order spoken, the shape refitted each time); speech that no shape can claim beco
 was; palm taps, pans and stray contacts never cut audio, because only silence does. Each utterance is sent as its
 own clip (speech plus 250 ms of padding), so mixed Korean/English talk is detected per utterance instead of one
 language swallowing the other. Bursts shorter than 0.4 s and known near-silence hallucinations ("감사합니다",
-"thanks for watching", …) are dropped rather than written.
+"thanks for watching", "Subtitles by amara.org", …) are dropped rather than written. A drop is never silent: the
+filtered text is toasted as **Filtered: "…"** for 2.5 s, and the mic button's tooltip carries a running
+**dropped N** with the last one, so a filter that ate real speech is visible instead of looking like a quiet room.
 
 ### Settings
 
@@ -82,7 +85,7 @@ The **⚙ gear in the top-right** opens the panel (the mic button only latches).
 | Max font size | 96 | Upper bound for text inside an area. |
 | Line max / **line min** font size | 36 / 14 | Text along a line shrinks to fit the line, but never below the line minimum: at that floor it wraps to the line's length and grows upward instead of shrinking past legibility. |
 | **Pre-roll (ms)** | 1500 | How long speech may start *before* its stroke and still belong to it. Raise it if you habitually name a box well before drawing it; lower it if labels keep jumping to the next shape. |
-| **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
+| **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale — both are drawn from the raw RMS the capture emits (`src/level.ts`, full scale 0.06), so what you see is what the VAD compares. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
 | **Warm mic on boot** | on | Acquire the microphone at page load so the first arm records instantly. Turn it off if you do not want the mic light on until you arm (the e2e turns it off to time fixtures). |
 
 ### Which stroke becomes which shape

@@ -65,6 +65,8 @@ type DownHandler = (tool: { type: string }, pds: { origin: Point }) => void;
 /** The scene, the app state and the two pointer subscriptions the controller installs. */
 class FakeApi {
   elements: El[] = [];
+  /** Every toast the controller raised, in order: the only rendered sink a drop has (gate N10). */
+  toasts: { message: string; duration?: number }[] = [];
   appState = {
     zoom: { value: 1 },
     newElement: null as El | null,
@@ -95,7 +97,9 @@ class FakeApi {
       },
       getAppState: () => this.appState as unknown as AppState,
       setActiveTool: () => undefined,
-      setToast: () => undefined,
+      setToast: (toast: { message: string; duration?: number } | null) => {
+        if (toast) this.toasts.push(toast);
+      },
       onPointerDown: (cb: DownHandler) => {
         this.down = cb;
         return () => {
@@ -165,6 +169,7 @@ class FakeCapture implements VoiceCapture {
   clock = 1000;
   mic: "ok" = "ok";
   active = false;
+  noiseFloor = 0;
   onUtteranceStart?: VoiceCapture["onUtteranceStart"];
   onUtteranceEnd?: VoiceCapture["onUtteranceEnd"];
   onLevel?: VoiceCapture["onLevel"];
@@ -210,10 +215,12 @@ interface Harness {
   stroke: (id: string) => Promise<void>;
 }
 
-function harness(patch: Partial<VoiceSettings> = {}): Harness {
+function harness(patch: Partial<VoiceSettings> = {}, transcribe: Transcribe = async () => ({
+  text: SENTENCE,
+  latencyMs: 1,
+})): Harness {
   const api = new FakeApi();
   const capture = new FakeCapture();
-  const transcribe: Transcribe = async () => ({ text: SENTENCE, latencyMs: 1 });
   const controller = createVoiceController({
     api: api.api(),
     capture,
@@ -368,5 +375,108 @@ describe("the controller never hands an utterance to a shape that has left the s
     const placed = h.api.elements.filter((e) => !e.isDeleted && e.text === SENTENCE);
     expect(placed, "exactly one free text carries the sentence").toHaveLength(1);
     expect(placed[0]!.containerId ?? null, "it is free text, not bound to the undone shape").toBeNull();
+  });
+});
+
+describe("a dropped transcript is rendered, not only counted (gate N10)", () => {
+  it("toasts the filtered text so a blocklist hit cannot be mistaken for a silent room", async () => {
+    const h = harness({}, async () => ({ text: "Subtitles by amara.org", latencyMs: 1 }));
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 5000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 3200 });
+
+    await until(() => h.status().dropped === 1, 3000);
+    expect(h.status().lastDropped).toBe("Subtitles by amara.org");
+    const drop = h.api.toasts.find((t) => t.message.startsWith("Filtered:"));
+    expect(drop, "the filter has a rendered sink").toBeTruthy();
+    expect(drop!.message).toBe('Filtered: "Subtitles by amara.org"');
+    expect(drop!.duration).toBe(2500);
+    expect(h.status().completed, "and nothing was written into the shape").toBe(0);
+  });
+
+  it("toasts a shape that ends with no text at all", async () => {
+    const h = harness();
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    // Nothing is ever said: the disarm discards the placeholder, which is the moment the founder needs told.
+    h.controller.toggleLatch();
+
+    await until(() => h.api.toasts.some((t) => t.message === "No speech heard for that shape"), 3000);
+    expect(h.api.toasts.at(-1)!.duration).toBe(2500);
+  });
+});
+
+describe("a failed entry whose shape has left the scene is pruned", () => {
+  /** Slow enough that `pending` is observable, so no case has to sleep to know the round trip is over. */
+  const boom: Transcribe = async () => {
+    await wait(20);
+    throw new Error("STT server unreachable");
+  };
+
+  /** One stroke, one utterance whose pre-roll deadline has already passed, dispatched and failed. */
+  async function failOne(h: Harness, id: number, ink: string): Promise<void> {
+    const base = 5000 * id;
+    h.capture.clock = base;
+    await h.stroke(ink);
+    h.capture.clock = base + 200;
+    h.capture.onUtteranceStart?.({ id, onsetMs: base + 200 });
+    h.capture.clock = base + 4000; // past onset + preRoll, so the assignment is final
+    h.capture.onUtteranceEnd?.({ id, onsetMs: base + 200, endMs: base + 1200 });
+    await until(() => h.status().failed >= 1, 3000);
+  }
+
+  function deleteAll(h: Harness): void {
+    h.api.elements = h.api.elements.map((e) => ({ ...e, isDeleted: true }) as El);
+  }
+
+  it("drops it when the scene is next resolved, so failed count and audio do not grow", async () => {
+    const h = harness({}, boom);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    await failOne(h, 1, "ink-a");
+    expect(h.status().failed).toBe(1);
+
+    // The founder undoes the shape rather than retrying it: the ⚠ and its audio have nowhere to go back to.
+    deleteAll(h);
+    h.controller.toggleLatch(); // disarm runs resolveTargets over the session
+
+    await until(() => h.status().failed === 0, 3000);
+    expect(h.status().failed, "the retry button must not stay lit for a shape that is gone").toBe(0);
+  });
+
+  it("drops an attempt-exhausted entry on retry instead of keeping it forever", async () => {
+    const h = harness({}, boom);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    await failOne(h, 1, "ink-a");
+    // Burn the three attempts: past MAX_ATTEMPTS retryFailed() skips the entry, so nothing else would remove it.
+    for (let i = 0; i < 2; i++) {
+      h.controller.retryFailed();
+      await until(() => h.status().pending === 0 && h.status().failed === 1, 3000);
+    }
+    h.controller.retryFailed();
+    expect(h.status().pending, "attempts are exhausted; no fourth request").toBe(0);
+    expect(h.status().failed).toBe(1);
+
+    deleteAll(h);
+    h.controller.retryFailed();
+
+    expect(h.status().failed, "nothing left to retry, so nothing left to show").toBe(0);
+    expect(h.status().pending, "and no request was sent into the void").toBe(0);
   });
 });

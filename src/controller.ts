@@ -49,6 +49,10 @@ const FAILED_TEXT = "⚠ STT";
 const FAILED_COLOR = "#c92a2a";
 /** Failed segments keep their audio in memory for retry; oldest are dropped past this. */
 const MAX_FAILED = 20;
+/** Long enough to read on the wall panel, short enough to be gone before the next stroke needs the space. */
+const DROP_TOAST_MS = 2500;
+/** A drop leaves no ⚠ and no retry, so the toast is the only thing that distinguishes it from a silent room. */
+const NO_SPEECH_TOAST = "No speech heard for that shape";
 const MAX_ATTEMPTS = 3;
 /** Gesture-scale thresholds are SCREEN px (RETRO L4): divided by zoom at the call site. */
 const TAP_MIN_SCREEN_PX = 12;
@@ -239,9 +243,9 @@ export const createVoiceController: CreateVoiceController = ({
     lastError = errorMessage(err);
     emit();
   };
-  const toast = (message: string): void => {
+  const toast = (message: string, duration?: number): void => {
     try {
-      api.setToast({ message });
+      api.setToast(duration === undefined ? { message } : { message, duration });
     } catch (err) {
       console.warn("[voice] setToast failed", err);
     }
@@ -497,6 +501,12 @@ export const createVoiceController: CreateVoiceController = ({
     if (!found) {
       return;
     }
+    if (!entry.orphan) {
+      // The shape stays, the placeholder goes, nothing is written: without this the founder cannot tell a silent
+      // room from a mic that heard nothing of what they said. An orphan is skipped — there is no "that shape",
+      // and its own drop has already been toasted with the text that was filtered.
+      toast(NO_SPEECH_TOAST, DROP_TOAST_MS);
+    }
     if (entry.orphan) {
       applyElements([newElementWith(found.text, { isDeleted: true })], CaptureUpdateAction.IMMEDIATELY);
       return;
@@ -513,7 +523,22 @@ export const createVoiceController: CreateVoiceController = ({
    * A target is closed once nothing can still be said into it: the session is over, or a later stroke exists
    * that any ongoing speech would be assigned to instead — and every utterance of its own has resolved.
    */
+  /**
+   * A failed entry whose shape has left the scene can never be retried into: retryFailed() looks the pair up and
+   * skips it, so it would sit in `failed` forever, holding its WAV alive and keeping the retry button lit for a
+   * shape that no longer exists. Every entry the scene has lost is dropped here instead.
+   */
+  const pruneFailed = (): void => {
+    for (const entry of [...failed.values()]) {
+      if (!findPair(entry.entry.target)) {
+        failed.delete(entry.utteranceId);
+        forgetStroke(entry.session, entry.entry.target.textId);
+      }
+    }
+  };
+
   const resolveTargets = (owner: Session): void => {
+    pruneFailed();
     const preRollMs = getSettings().preRollMs;
     const openOnsets: number[] = [];
     for (const u of owner.utterances.values()) {
@@ -594,6 +619,11 @@ export const createVoiceController: CreateVoiceController = ({
           // dropped in silence — a filtered answer and a silent room look identical on the canvas.
           droppedCount += 1;
           lastDropped = text;
+          // A filter that ate real speech has to be visible the moment it happens (RETRO L2 / gate N10). An empty
+          // answer says nothing about *which* shape yet, so that one is toasted by the discard below instead.
+          if (text) {
+            toast(`Filtered: "${text}"`, DROP_TOAST_MS);
+          }
         }
       } catch (err) {
         if (disposed || abort.signal.aborted) {
@@ -1148,6 +1178,8 @@ export const createVoiceController: CreateVoiceController = ({
         return;
       }
       try {
+        // Entries whose shape has gone go first, so a retry never counts (or keeps) a target that cannot receive it.
+        pruneFailed();
         for (const entry of [...failed.values()]) {
           if (entry.attempts >= MAX_ATTEMPTS) {
             continue; // keep it failed and retryable by hand; three rounds is enough

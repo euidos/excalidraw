@@ -1,6 +1,7 @@
 /**
- * Capture gates for the two states the wall panel can get stuck in: a microphone that errored once and can never
- * be re-armed, and a cold audio HAL whose slow-but-successful resume was reported as a permanent failure.
+ * Capture gates for the states the wall panel can get stuck in (gate N11: every blocking state is entered, the
+ * cause is cleared, and the product works again WITHOUT a reload — the panel has no keyboard and no one to press
+ * F5), plus the unit the level meter is drawn from (gate N12).
  * The audio graph is faked (node has no Web Audio); only the state machine around it is under test.
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,8 +51,11 @@ class FakeAudioContext {
   createGain(): { gain: { value: number }; connect: () => void; disconnect: () => void } {
     return { gain: { value: 0 }, connect: () => undefined, disconnect: () => undefined };
   }
+  /** Kept so a test can hand the capture a chunk of PCM the way the real node would. */
+  processor: ReturnType<typeof node> | null = null;
   createScriptProcessor(): ReturnType<typeof node> {
-    return node();
+    this.processor = node();
+    return this.processor;
   }
   async resume(): Promise<void> {
     if (this.resumeAfterMs === 0) {
@@ -106,6 +110,16 @@ function install(): void {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** One 2048-sample chunk of constant-amplitude audio: RMS is exactly `amplitude`, before and after resampling. */
+function feed(amplitude: number, chunks = 1): void {
+  const ctx = FakeAudioContext.created.at(-1)!;
+  const data = new Float32Array(2048).fill(amplitude);
+  const handler = (ctx.processor as unknown as { onaudioprocess: ((e: unknown) => void) | null }).onaudioprocess;
+  for (let i = 0; i < chunks; i++) {
+    handler?.({ inputBuffer: { getChannelData: () => data } });
+  }
+}
+
 let capture: ReturnType<typeof createVoiceCapture> | null = null;
 afterEach(() => {
   capture?.dispose();
@@ -113,7 +127,7 @@ afterEach(() => {
 });
 
 describe("prepare() — a cached microphone must not confirm its own error forever", () => {
-  it("re-validates an intact graph instead of returning the stale error state", async () => {
+  it("N11(c): re-checks an intact graph instead of returning the latched error state", async () => {
     install();
     const seen: MicState[] = [];
     capture = createVoiceCapture();
@@ -131,7 +145,7 @@ describe("prepare() — a cached microphone must not confirm its own error forev
     expect(seen).toEqual(["ok", "error", "ok"]);
   });
 
-  it("tears the cached graph down and rebuilds when the context is no longer running", async () => {
+  it("N11(c): tears the cached graph down and rebuilds when the context is no longer running", async () => {
     install();
     capture = createVoiceCapture();
     expect(await capture.prepare()).toBe("ok");
@@ -148,7 +162,7 @@ describe("prepare() — a cached microphone must not confirm its own error forev
 });
 
 describe("start() — a slow resume is not an autoplay block", () => {
-  it("clears back to ok when the context runs after the old 500 ms grace period", async () => {
+  it("N11(a): clears back to ok when the context runs after the old 500 ms grace period", async () => {
     install();
     rig.nextState = "suspended";
     rig.resumeAfterMs = 900;
@@ -165,7 +179,7 @@ describe("start() — a slow resume is not an autoplay block", () => {
     expect(capture.active).toBe(true);
   });
 
-  it("still reports the failure once the whole window has elapsed", async () => {
+  it("N11(a): still reports the failure once the whole window has elapsed", async () => {
     install();
     rig.nextState = "suspended";
     rig.resumeAfterMs = 60_000; // never, for the purposes of this test
@@ -182,4 +196,86 @@ describe("start() — a slow resume is not an autoplay block", () => {
     expect(capture.mic).toBe("error");
     expect(seen.at(-1)).toEqual(["error", "audio context suspended"]);
   }, 10_000);
+});
+
+describe("N11(a) — an audio context that stays suspended past the window and then comes back", () => {
+  it("goes error, then ok, and arms again without a reload", async () => {
+    install();
+    rig.nextState = "suspended";
+    rig.resumeAfterMs = 60_000; // the HAL is asleep for longer than the whole resume window
+    const seen: MicState[] = [];
+    capture = createVoiceCapture();
+    capture.onMicChange = (mic) => seen.push(mic);
+
+    await capture.prepare();
+    await capture.start();
+    await wait(3_400);
+    expect(capture.mic, "the window elapsed with the context still suspended").toBe("error");
+
+    await capture.stop();
+    expect(capture.active).toBe(false);
+
+    // The founder taps the latch again after the panel wakes up: the context is running now.
+    FakeAudioContext.created.at(-1)!.state = "running";
+    await capture.start();
+
+    expect(capture.mic, "the error cleared with its cause").toBe("ok");
+    expect(capture.active, "and the take actually started").toBe(true);
+    expect(rig.calls, "no new getUserMedia: no permission prompt, no reload").toBe(1);
+    expect(seen).toEqual(["ok", "error", "ok"]);
+  }, 15_000);
+});
+
+describe("N11(b) — a muted track", () => {
+  it("errors on mute, clears on unmute, and starts again", async () => {
+    install();
+    const seen: [MicState, string | undefined][] = [];
+    capture = createVoiceCapture();
+    capture.onMicChange = (mic, detail) => seen.push([mic, detail]);
+
+    expect(await capture.prepare()).toBe("ok");
+    const track = rig.streams[0]!.track;
+
+    track.onmute?.();
+    expect(capture.mic).toBe("error");
+    expect(seen.at(-1)).toEqual(["error", "microphone muted"]);
+
+    track.onunmute?.();
+    expect(capture.mic, "the mute ended; the tool must not stay refused").toBe("ok");
+
+    await capture.start();
+    expect(capture.active).toBe(true);
+    expect(rig.calls, "the same stream, no re-acquisition").toBe(1);
+  });
+});
+
+describe("N12 — the number the meter is drawn from", () => {
+  it("emits RAW RMS through onLevel, not a display-gained copy of it", async () => {
+    install();
+    const levels: number[] = [];
+    capture = createVoiceCapture();
+    capture.onLevel = (rms) => levels.push(rms);
+    await capture.prepare();
+    await capture.start();
+
+    // Constant 0.1 amplitude: RMS is 0.1. Round 2 emitted 0.4 here (RMS x 4) while the panel drew the VAD
+    // threshold on the raw axis, so the bar read four times the room it was being compared against.
+    feed(0.1);
+    expect(levels[0]).toBeCloseTo(0.1, 3);
+  });
+
+  it("reports the VAD's noise floor on that same scale", async () => {
+    install();
+    const levels: number[] = [];
+    capture = createVoiceCapture();
+    capture.onLevel = (rms) => levels.push(rms);
+    await capture.prepare();
+    await capture.start();
+    expect(capture.noiseFloor, "nothing measured yet").toBe(0);
+
+    // 6 chunks is ~2000 output samples per chunk-triple: enough 20 ms frames to seed the floor from the room.
+    feed(0.004, 6);
+    expect(capture.noiseFloor, "the room, in RMS").toBeCloseTo(0.004, 3);
+    expect(levels[0], "and the meter is fed the same unit").toBeCloseTo(0.004, 3);
+  });
 });

@@ -472,6 +472,12 @@ test.describe("voice areas", () => {
       expect((await status(page)).utterances).toBe(0);
       await releaseHold(page);
 
+      // Gate N10: the drop is rendered, not only counted. The library's own Toast is the sink — without it a
+      // silent room and a mic that heard nothing look identical, because a discard leaves no ⚠ and no retry.
+      await expect(page.locator(".Toast .Toast__message")).toHaveText("No speech heard for that shape", {
+        timeout: 15_000,
+      });
+
       await expect
         .poll(
           async () => {
