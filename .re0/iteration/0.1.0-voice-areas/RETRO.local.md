@@ -1,145 +1,191 @@
-# RETRO — 0.1.0 voice-areas (round 1)
+# RETRO — 0.1.0 voice-areas (current, after round 2)
 
-Cycle shape: DESIGN + contracts → 5 parallel module builders → 1 integrator → 1 e2e driver → 4 review lenses.
-Outcome: build green, 12/12 e2e green, **all four lenses returned `fail`**. The gates passed and the product did
-not. This memo is about why those two facts coexist.
+One document, rewritten each round. Round-1 lessons that still bite stay below in their current form; the ones a
+round-2 gate actually closed are in **Closed** at the end with the gate that closed them.
+
+Round-2 cycle shape: DESIGN R1–R7 + `src/contracts-capture.ts` made live → 5 builders (capture/vad, assign, fit,
+ui-persist-settings, controller) → integrator (App.tsx, `audio.ts` deleted) → e2e driver (**22/22**, retries 0,
+real STT) → 2 review lenses (**both `fail`, 2 blockers**) → post-review fix (**23/23**, unit 88/88) → cold read
+(`minor-gaps`).
+
+Outcome to hold on to: **the board went green, a lens drove the same shipped bundle by hand and found a blocker,
+the board went green again.** Round 1 ended the same way with four lenses. That repetition — not any single bug —
+is the finding of this round.
 
 ## What earned reuse
 
-- **`src/contracts.ts` as the coordination device.** Five builders on disjoint files, zero cross-edits, `tsc
-  --noEmit` clean on the integrator's *first* run, App.tsx the only wiring work (integrator notes). Keep this
-  shape: contracts first, disjoint ownership, integrator wires only.
-- **`test/unit/stroke.test.ts`** — 11 deterministic cases, sin-based jitter instead of randomness, no flake across
-  the cycle. Geometry that can be tested in-process should never be tested through the browser.
-- **The real-surface e2e rig**: per-test Chromium launch because `--use-file-for-fake-audio-capture` is a launch
-  flag (test/e2e/helpers.ts:4), real STT at 100.81.33.83:8770, `window.__excalidrawVoice` as the assertion surface.
-  The rig is sound; the *cases* it runs are the problem (below).
-- **Builder risk lists.** They were accurate predictions, not hedging: fit's container-growth floor, controller's
-  30 ms + rAF window, StrictMode double-arm, line text outside `boundElements`. Three of the four lens blockers
-  are literally paraphrases of risks a builder had already written down.
+- **Contracts-first, disjoint ownership, integrator wires only.** Second round running: five builders, zero
+  cross-edits, `tsc --noEmit` clean on the integrator's first run, App.tsx the only wiring. Unchanged verdict.
+- **The pure-module split (`vad.ts`, `assign.ts`, `stroke.ts`).** All three are DOM-free and timer-free, so their
+  rules are pinned in-process: 15 VAD cases, 26 assignment cases, 11 geometry cases, no flake, no browser. Every
+  rule that can be stated without a browser must live in a module shaped like these.
+- **The property test over a pure rule.** The post-review fix pinned `isSuperseded` by asserting it agrees with
+  `assignUtterance` across a 60-combination grid rather than re-stating the rule. That is the only gate in two
+  rounds that would have caught its own blocker before a lens did. Copy the shape, not the case.
+- **The e2e rig's move from wall-clock guessing to event subscription.** `recordUtterances` / `waitForUtterance`
+  chain onto the real VAD callbacks, so cases schedule against real utterance boundaries. Round 1's "sleep 600 ms
+  between strokes" was a timing detail; round 2 showed it decides *who gets the words*. Keep the subscription
+  helpers; never reintroduce an unconditional sleep.
+- **Builder risk lists, again.** The level-scale mismatch, the dead-target dispatch, the multi-touch stroke loss
+  and the unproven capture path were all written down by their builders before any lens ran. Round 1 said the same
+  thing. A risk list is a defect list that has not been triaged yet — see L5.
 
 ## What only looked like progress
 
-- **`src/contracts-capture.ts`** (90 lines, committed to `src/` in f344766): zero importers in `src/`, `test/`,
-  `scripts/`; declares `capture.ts`/`assign.ts` that do not exist; its header says it replaces the segmenting that
-  shipped `audio.ts` still implements. `src/` currently carries two contradicting contracts.
-- **`test/fixtures/three-utterances.wav` + `.json`** — built specifically to catch the hate pass's root objection
-  (speech-before-stroke misassignment). No test references them. Same for `ko-long.wav`, `en-long.wav`,
-  `ko-mixed.wav`.
-- **The green gate board itself.** See L1.
+- **22/22 green.** Both lens blockers were invisible to it by construction: `resolveTargets`'s inverted predicate
+  only fires when an unassigned utterance is open at the tick, and no timed gate ever arranged that (`[].every()`
+  is vacuously true, giving the same answer either way); the capture brick needs a mic to fail and then recover,
+  and no case ever recovers a failed mic.
+- **`VoiceStatus.dropped` / `lastDropped`.** Added so a filtered transcript is not silent; `toolbar.tsx` renders
+  neither, so on the wall panel a filtered transcript and a silent room still look identical. A channel with no
+  rendered sink is a private field with extra steps (L2).
+- **Test parameters chosen to make a gate writable.** N2a pins `preRollMs: 0`; G4d and G5c swapped fixtures
+  because the VAD seeds its floor from the first 200 ms; every test forces `warmMicOnBoot: false`. Each is a place
+  the harness bent around the product, and one of them hides a live defect (L4).
 
 ## Lessons
 
-**L1 — A gate authored from the builder's report tests the implementation's happy zone, not the product.**
-Every soft spot a lens found sits exactly where the e2e chose a friendly parameter:
-- fit's builder wrote "a G4 assertion of 'container size unchanged' must use boxes >= ~120x90". G4a
-  (voice.spec.ts:172) calls `buildPlaceholder` directly at **240x120** and passes. The stylus lens measured a
-  60x40 ellipse growing to **60x280** with one ordinary Korean sentence — the exact case the gate was steered away
-  from.
-- G1 holds for 12.5 s over a **looping** 11 s WAV ("holding longer than one loop puts the whole sentence in this
-  one segment", voice.spec.ts:52) so every segment window is guaranteed to contain speech and a wrong boundary
-  cannot show up.
-- `drawStroke` always sleeps **120 ms** after `mouse.up` (helpers.ts:204) and G2 sleeps another 600 ms between
-  strokes — the controller's capture races live in a ~45 ms window, so no case can reach them.
-- Every e2e case runs at **zoom 1** with generous strokes; both of the stylus lens's directions of failure need a
-  zoom ≠ 1.
-Gate: G-parameters come from the casebook's declared operating envelope, never from a builder report, and each
-gate carries at least one case at the hostile end of its range.
+**L1 — A green suite proves the nominal path; a predicate that destroys user work needs its truth table pinned,
+not its happy case.**
+Round 1's form of this was "gates calibrated by builder reports". Round 2 fixed that honestly — the envelope is
+declared, G4a runs the hostile 120x80, N5 runs zoom 0.5 and 2 — and the class survived anyway, because *every*
+e2e case still walks the sequence in which the product works. Evidence: `resolveTargets`'s supersede test read
+`later.downMs - preRollMs > onset`, the exact negation of assign.ts's candidate rule, so a shape was discarded
+precisely when speech could still claim it; reproduced on the shipped bundle (shape A drawn at ~5 s, ko-long opens
+at 7.68 s, shape B at ~8.2 s → A goes solid, the sentence is dispatched into a deleted target, `completed=2` for 3
+utterances, no error, no orphan). Same family: `dispatch()` handed utterances to undone shapes; `prepare()`'s fast
+path returned a cached `mic`.
+Gate (N9): every predicate whose false branch deletes, discards, refuses or restores is extracted as a pure
+exported function and gated either by its full truth table or by a property test asserting agreement with the
+module that owns the rule. A predicate that exists only inside an async handler is not gated.
 
-**L2 — Failure was designed as an internal field instead of a channel, so degradation is silent everywhere.**
-One root, four sightings: `audio.ts` catches every mic exception and only mutates its private `mic` field, which
-makes `controller.armBody`'s disarm-on-mic-failure branch (controller.ts:390) **dead code** — a denied mic leaves
-the tool armed, hijacking strokes into placeholders that are later discarded with no `lastError`; a stroke landing
-in the deferred-capture window stays as raw ink with no placeholder and `completed` unchanged; `fit`'s "library
-unavailable" fallbacks `console.warn` and return `undefined` cast as an element; `dispatch`'s handlers run against
-a torn-down editor after `dispose()`. In all four the system continues in a wrong state and tells nobody.
-Gate: every module boundary that can fail returns a typed result to its caller; no caller learns about failure by
-reading the callee's field; each boundary has a test asserting the failure reaches `status.lastError`.
+**L2 — A failure channel is not done until something renders it.**
+Round 1: mic errors died in a private field. Round 2 built the channel (`onMicChange`, typed `MicState`,
+`status.lastError`, proven by N3) and then repeated the failure one level up: `dropped`/`lastDropped` reach
+`VoiceStatus` and stop there; a target stuck at "⚠ STT" is never discarded or surfaced beyond a count; an evicted
+`FailedEntry` leaves `entry.failed = true` with no retry path and no way to clear it.
+Gate: every field of `VoiceStatus` has either a rendered surface with an e2e assertion, or an EVIDENCE row saying
+"debug-only, not rendered". No third option.
 
-**L3 — Deferred work keyed to a user event needs a flush barrier, not a hope about timing.**
-`onPointerUp → setTimeout(30) → rAF → captureStroke` has no barrier: a pointer-down or an F9 release inside the
-window skips the capture (correctness lens reproduced both against the shipped bundle at 15 ms), and
-`captureStroke`'s `finally { snapshotScene() }` then folds the next stroke's in-progress freedraw into the
-"already seen" baseline so it can never be recognised. Related same-family defect: `fresh[0]` identifies "the
-element this stroke made" by scene order over a whole-scene diff, so an undo/paste/remote insert while armed
-converts the *wrong* element.
-Gate: any deferred handler is a named, flushable unit run synchronously at the head of every event that could
-invalidate it; identity of "the thing this interaction produced" is taken from the interaction, not from a scene
-diff; e2e includes a zero-gap stroke pair and a disarm-immediately-after-pen-up case.
+**L3 — Deferred work keyed to a user event needs a barrier, and the barrier must cover every consumer of the
+deferred fact, not just the producer.**
+Round 2 fixed the round-1 form: interaction-scoped identity from `appState.newElement`, the conversion queue,
+`Session.conversions` blocking assignment while a stroke is converting — N2a/N2b/N2c all green. The same family
+then reappeared in the consumer nobody barriered: a stroke enters `session.strokes` only inside the pointer-**up**
+conversion (controller.ts:727), so an utterance whose pre-roll deadline expires while the pen is still down is
+finalised against a stroke list that is missing the stroke being drawn for it. Measured on the real surface:
+onset 639 ms, deadline 2139 ms, pointer-down 1059 ms, pointer-up 3025 ms → `orphans: 1`, "회의 안건 정리" placed as
+free text instead of in the container. **Still open.** Any careful stroke over a label spoken just before it hits
+this.
+Gate (N2e): with default `preRollMs`, arm, wait past an utterance's onset, then draw a stroke slower than the
+pre-roll window → `orphans === 0` and the words land in that stroke's container.
 
-**L4 — Gesture-scale constants in scene pixels are wrong on any surface the user can zoom.**
-`recognize(points)` is called with no options (controller.ts:481), so the tap floor is a fixed 12 **scene** px:
-measured, at zoom 0.5 a 6-screen-px jitter becomes a real line that claims the open audio segment; at zoom 8 a
-deliberate 120-screen-px underline is 15 scene px and near deletion. Same unit confusion in
-`verticalLineAreaWidth`, the line-text offset and the placeholder font clamp.
-Gate: no constant derived from a human gesture is expressed in scene px; each is divided by
-`appState.zoom.value` at the call site, and the e2e runs the recognition cases at zoom 0.4 and zoom 4.
+**L4 — A gate that needs a non-default setting to pass has found a defect, not a parameter.**
+Round 1's L5 said an unregistered decision did not happen; the round-2 form is sharper because the harness now
+writes settings. N2a pins `preRollMs: 0` — at the default the assignment rule gives both sentences to the second
+stroke, and the only way to give the first stroke a sentence is a stroke that spans the deadline, i.e. exactly the
+open defect above. G4d and G5c changed fixture because the VAD seeds its noise floor from whatever the first 10
+frames contain, so a clip with 100 ms of lead-in is transcribed from its second clause. `warmMicOnBoot: false` is
+forced everywhere, which means the whole suite exercises a cold mic the kiosk never has.
+Gate: each non-default setting or fixture swap in the e2e exits the round as either a defect row or an
+"accepted, not tested" row in EVIDENCE.local.md, naming the product behaviour it dodges.
 
-**L5 — Decisions recorded in a REF but not registered as gate rows do not happen.**
-The hate pass settled round-2 segmenting and produced the fixture for it; the fixture is unused, the contract sits
-unreferenced in `src/`, and nothing in EVIDENCE.local.md tracks either. This is the same failure the founder has
-already paid for elsewhere (board decisions never linked into the register). A decision is real when it has a row
-with a proof path.
-Gate: every decision in a REF or hate pass, and every risk in a builder report, exits the cycle as either a gate
-row in EVIDENCE.local.md or an explicit "accepted, not tested" line. The memo step fails if any is unplaced.
+**L5 — A declared risk is an untriaged defect; a decision without a gate row did not happen.**
+Both halves recurred verbatim. The lens blockers are paraphrases of builder risks ("the controller must drop
+records for deleted shapes", "nothing of the capture path has been exercised against a real microphone"). The
+post-review fix's own closing note says N2d and four new unit gates have no EVIDENCE row. Round 1 recorded this
+lesson and round 2 reproduced it, which means the memo step, not the builders, is where it must be enforced.
+Gate: the memo step fails if any builder risk, lens finding or fixed defect from the round lacks a row — met,
+unmet, untested or accepted. (Enforced this round: the rows are written below in EVIDENCE.local.md.)
 
-**L6 — Reported evidence was not read back from the artifact.**
-The driver's final report cites `test-results/last-run.txt` — **the file does not exist** — and reports
-`maxPendingSeen: 0` while the G2 spec asserts `>= 2` and passed. `retries: 1` is configured to absorb STT
-nondeterminism and duly absorbed G2's first-attempt failure ("expected 3 bound texts, got 2"), which the driver
-itself calls "a timing race in the sandbox"; the stale
-`test-results/voice-voice-areas-G2-paral-…/trace.zip` is still on disk.
-Gate: gate runs use `retries: 0` and a flake is a failure; the run log is written to the cited path and the memo
-step verifies every cited evidence path exists before any status is marked met.
+**L6 — Contracts type shapes, not units, scales or lifetimes — so every seam is still unowned.**
+Round 1: who converts screen→scene, who may resize the user's shape, who reports a dead mic. Round 2 answered all
+three and opened new ones in the same class: `capture.onLevel` emits RMS×4 clamped 0..1 while `settings-panel.tsx`
+draws both the bar and the VAD threshold marker against `VAD_MAX = 0.06` on the raw RMS scale, so the founder
+cannot set a threshold by eye against a bar that reads ~4× high (measured live: near-silence 0.0045 vs threshold
+0.012); `utteranceSession` is written and never deleted, so every Session a kiosk ever opened is retained for the
+life of the page; `fit.discard`/`markFailed` restore the drawn geometry unconditionally, with no way to tell
+"grown by our placeholder" from "resized by the user".
+Gate: every numeric crossing a module boundary declares unit AND scale in the contract; every map keyed by a
+transient id declares who deletes the entry; any UI drawing two numbers on one axis has a test that they share a
+scale.
 
-**L7 — Contracts typed signatures, so nobody owned the invariants between modules.**
-Five modules, all individually defensible, and the three worst defects are ownership gaps: who converts
-screen→scene units (controller or stroke?), who is allowed to change a shape the user drew (`fit` silently adopts
-the library's grown geometry, contradicting G4's own wording), who reports a dead mic (audio has the fact, only
-controller has the surface). No lens found a module wrong; all four found the seams wrong.
-Gate: the contract file states, per boundary, the unit, the error channel and the owner of each mutable
-quantity; a cross-module invariant without a named owner blocks the build step.
+**L7 — A module state that blocks the product needs a recovery gate, not only an entry gate.**
+N3 proved a denied mic refuses to arm. Nothing proved it ever un-refuses. `prepare()` short-circuited on a cached
+stream+context and returned the cached `mic`, so the moment `mic` latched to "error" — which a still-suspended
+AudioContext did after 500 ms, and a track `mute` with no `unmute` did too — the tool refused to arm for the life
+of the page. On a keyboardless wall panel whose only affordance is the latch button, that is unrecoverable.
+Fixed and unit-gated; the class is not.
+Gate: for every state a module can enter that makes the product refuse to work, an automated case enters it,
+clears the cause, and asserts the product works again without a reload.
+
+**L8 — A capture path proven by construction is not proven.**
+Every capture claim entering integration was offline arithmetic plus a Chromium fake device: worklet path,
+ScriptProcessor fallback, resume-after-gesture, clock-offset drift, WAV cut accuracy. Two of the round's blockers
+and the VAD floor-seeding artefact all live there. The fake mic starts its file at `getUserMedia`, which is why
+the suite had to force a cold mic and why the field's warm-mic behaviour has never run under test.
+Gate: any audio-graph behaviour asserted this round is re-measured on the kiosk with a real microphone
+(`scripts/kiosk-mic-check.mjs` + a cold-start suspend probe) before its row moves off "untested".
 
 ## Anti-patterns (failure mode → catching gate)
 
-| Anti-pattern | Failure mode observed | Gate |
+| Anti-pattern | Failure mode observed this round | Gate |
 | --- | --- | --- |
-| Builder-calibrated gate | G4a asserts no-growth at 240x120 because the builder said <120x90 fails; 60x40 grows 7x | Envelope-declared parameters + one hostile-end case per gate |
-| Sleep-padded e2e | 120 ms after every pen-up hides a 45 ms capture race that loses whole strokes | Zero-gap and interrupt cases; no unconditional sleep in helpers |
-| Speech that never stops | Looping WAV makes every segment boundary look correct | Per-utterance fixture with silence gaps; assert words per shape |
-| Error as a private field | Denied mic leaves the tool armed and recording nothing; disarm branch is dead code | Typed failure results; status.lastError assertion per boundary |
-| Scene-px gesture constants | 12 px tap floor swallows a real underline at zoom 8, promotes jitter at zoom 0.5 | Zoom-normalised constants; e2e at zoom 0.4 / 4 |
-| Diff-by-scene-order identity | Undo while armed converts the restored old stroke, ink stays ink | Interaction-scoped identity; undo-while-armed e2e case |
-| Forward contract in src/ | Two contradicting contracts shipped; 90 lines nothing imports | src/ holds only contracts the shipped modules implement |
-| Unregistered decision | Round-2 fixture and contract exist, no test or row references them | Decision/risk → gate row or accepted-risk line, enforced at memo |
-| Retry-absorbed flake | G2's real race counted as a pass | retries:0 on gate runs |
-| Unverified evidence citation | last-run.txt cited, absent; maxPendingSeen reported 0 vs asserted ≥2 | Memo verifies every cited path before marking met |
+| Nominal-path-only suite | Inverted supersede predicate green in 22/22; lens found it by hand in one session | N9 truth-table / property gate on destructive predicates |
+| Predicate buried in an async handler | `resolveTargets`'s comparison had no callable form until the fix extracted `isSuperseded` | Destructive rules are exported pure functions |
+| Channel without a sink | `dropped`/`lastDropped` in VoiceStatus, nothing renders them | Every status field: rendered + asserted, or a debug-only row |
+| Barriered producer, unbarriered consumer | Stroke registered at pointer-up; assignment finalises mid-stroke → orphan | N2e slow-stroke-across-deadline case |
+| Harness setting as a product parameter | N2a passes only at `preRollMs: 0`, which is the defect | Non-default setting → defect or accepted-risk row |
+| Latching failure state | `prepare()` returned cached "error" forever; 500 ms resume verdict never re-checked | Recovery case per blocking state, no reload |
+| Untriaged builder risk | Two lens blockers were already in builder risk lists | Every risk exits as a row |
+| Unit without a scale | onLevel RMS×4 drawn against a raw-RMS threshold marker | Contract declares unit + scale per crossing number |
+| Map that is never deleted from | `utteranceSession` retains every Session for the page's life | Every transient-keyed map names its deleter |
+| Proof by construction | Whole capture path shipped on offline maths + a fake device | Kiosk re-measure before "met" |
 
-## Next-cycle gates (proposed, for the main loop to fold into EVIDENCE)
+## Next-cycle gates
 
-- **N1 Envelope** — DESIGN declares the operating envelope (zoom 0.4–4, shape 40x30–800x600, inter-stroke gap
-  0 ms–5 s, IR multi-touch) and every gate names where in it each case sits.
-- **N2 Boundary-race** — zero-gap stroke pair, disarm inside the capture window, undo while armed: each produces
-  exactly one shape per stroke and no orphan ink.
-- **N3 Visible failure** — mic denied / mic unplugged mid-hold / STT dead: the tool disarms or surfaces
-  `lastError`, and never converts a stroke it cannot transcribe.
-- **N4 Geometry ownership** — the drawn shape's width/height are byte-identical after commit at 60x40 with a long
-  Korean transcript (overflow spills as unbound text, the founder's shape is never resized).
-- **N5 Zoom invariance** — the same physical gesture recognises identically at zoom 0.4, 1 and 4.
-- **N6 Utterance assignment** — `three-utterances.wav` (silence-gapped, `%noloop`) with three strokes: assert the
-  *words* in each shape, not the count.
-- **N7 Single contract** — `src/` imports every contract it contains; no unreferenced module in `src/`.
-- **N8 Evidence integrity** — `retries: 0`, run log written, every path cited in a report exists.
+- **N9 Destructive predicate** — every discard/delete/refuse/restore rule is a pure exported function with a truth
+  table or property gate against the module that owns the rule.
+- **N2e Pre-roll across a live stroke** — default `preRollMs`, speech then a stroke slower than the window →
+  `orphans === 0`, words in that stroke's container. (Currently failing; see L3.)
+- **N10 Status rendering** — every `VoiceStatus` field is rendered and asserted, or carries a debug-only row.
+- **N11 Recovery** — every blocking module state is entered, cleared, and the product works again without reload.
+- **N12 Scale agreement** — the level meter and the VAD threshold marker are asserted to share one scale.
+- **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy on the panel.
+- Carried forward unchanged: **N8 evidence integrity** (retries 0, log at the cited path, every path verified).
 
 ## Vocabulary for the next agent
 
-- **operating envelope / hostile end** — the declared range of a parameter, and the worst value in it; gates cite
-  both.
-- **flush barrier** — the synchronous run-now handle on deferred work, invoked by any event that would invalidate it.
-- **error channel vs. error field** — a typed value the caller must handle vs. state the caller has to think to read.
-- **scene px vs. screen px** — the unit split; gesture thresholds are screen, geometry is scene.
-- **interaction-scoped identity** — "the element this pointer interaction made", never "the element that is new".
-- **gate row** — a line in EVIDENCE.local.md with a proof path; a decision without one did not happen.
-- **utterance** (round 2) vs. **segment** (round 1) — atomic speech bounded by VAD silence vs. audio between
-  pointer-downs. Round 2 assigns utterances to strokes; do not mix the words.
-- **declared risk** — a builder-reported hazard; exits the cycle as a gate row or an accepted-risk line.
+Carried from round 1 and still load-bearing: **operating envelope / hostile end**, **flush barrier**, **error
+channel vs. error field**, **scene px vs. screen px**, **interaction-scoped identity**, **gate row**,
+**declared risk**, **utterance** (VAD-bounded speech; round 1's **segment** is dead — `audio.ts` is deleted).
+
+New this round:
+
+- **nominal path** — the sequence in which the product works. A green suite is evidence about it and nothing else.
+- **destructive predicate** — a boolean whose false branch removes user work. Must be pure, exported, gated.
+- **rendered sink** — the surface that shows a status field. Without one, the field is not a channel.
+- **harness-bent parameter** — a non-default setting or swapped fixture a gate needs in order to pass. Always a
+  finding.
+- **latching state** — a module state that survives the condition that caused it. Needs a recovery gate.
+- **proof by construction** — offline arithmetic or a fake device standing in for the real surface. Not proof.
+- **scale (vs. unit)** — the multiplier on a number crossing a boundary. Contracts type neither today.
+
+## Closed (round-1 lessons a round-2 gate retired)
+
+- **L4/round-1 — scene-px gesture constants.** Closed by **N5**: recognition thresholds are divided by
+  `appState.zoom.value` at the controller's call site; a 300x160 screen-px oval yields 600x320 scene px at zoom
+  0.5 and 150x80 at zoom 2, and a 6-screen-px tap creates nothing at either zoom.
+  Proof: `test-results/evidence/n5-zoom-0.5.png`, `n5-zoom-2.png`, `n5-zoom.png`.
+- **L6/round-1 — unverified evidence citations.** Closed by **N8**: `playwright.config.ts` has `retries: 0` and
+  `outputDir: test-results/artifacts` so Playwright's start-of-run wipe no longer deletes the cited log;
+  `test-results/last-run.txt` exists and ends `23 passed (2.7m)`; all 26 cited evidence paths verified present on
+  disk at memo time.
+- **Round-1 "forward contract in src/" (N7).** Closed: `src/audio.ts` deleted, the retired
+  `SegmentRecorder`/`RecorderOptions`/`CreateSegmentRecorder` block removed from `contracts.ts`,
+  `src/contracts-capture.ts` now imported by live modules. `src/` holds one contract set.
+- **Round-1 "speech that never stops" / looping WAV.** Closed by **N6**: `three-utterances.wav%noloop` played
+  once, words asserted per shape and asserted absent from the neighbours, `orphans === 0`.
+- **Round-1 N4 geometry ownership** was never adopted as its own row; **G4** absorbed it and now proves
+  no container growth at the hostile 120x80 as well as 240x120. G4's documented exception (a shape too small for
+  the floor font size is grown visibly) stands.

@@ -9,6 +9,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { VoiceSettings, VoiceStatus } from "../../src/contracts";
+import type { UtteranceEvent } from "../../src/contracts-capture";
 
 /** Overridable so the suite can be pointed at a scratch build while diagnosing an app defect. */
 export const APP_URL = process.env.VOICE_APP_URL ?? "http://127.0.0.1:4173";
@@ -43,43 +44,58 @@ export interface Launched {
 }
 
 export interface LaunchOptions {
-  /** localStorage entries written before any app code runs (G6 seeds the vanilla keys this way). */
+  /** localStorage entries written before any app code runs (G6 / R3 seed the vanilla keys this way). */
   seed?: Record<string, string>;
+  /** Voice settings written before boot; merged over `warmMicOnBoot: false` (see below). */
+  settings?: Partial<VoiceSettings>;
+  /**
+   * Launch WITHOUT `--use-fake-ui-for-media-stream` and without granting "microphone", so getUserMedia is
+   * refused: the only way to exercise the denied-mic path on a real surface (N3).
+   */
+  denyMic?: boolean;
   /** Skip the navigation + readiness wait (unused so far, kept so a test can drive the boot itself). */
   skipGoto?: boolean;
 }
 
 /**
  * Launches chromium with the fake microphone fed by `clipPath` and opens the app.
+ *
+ * `warmMicOnBoot` is forced OFF for every test: Chromium starts playing the fake-audio file when getUserMedia is
+ * called, so warming the mic at page load would start the clip at an unknowable offset. With it off the stream —
+ * and therefore the fixture's own timeline — starts at the arm, which is what the timed tests measure from.
+ *
  * Callers MUST close the browser in a finally block.
  */
 export async function launchWithClip(clipPath: string, opts: LaunchOptions = {}): Promise<Launched> {
   const browser = await chromium.launch({
     args: [
       "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
+      ...(opts.denyMic ? [] : ["--use-fake-ui-for-media-stream"]),
       `--use-file-for-fake-audio-capture=${clipPath}`,
       "--autoplay-policy=no-user-gesture-required",
     ],
   });
   try {
     const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
-    await context.grantPermissions(["microphone"], { origin: APP_URL });
-    const page = await context.newPage();
-    if (opts.seed) {
-      const seed = opts.seed;
-      // Init scripts run on EVERY navigation, so the seed is written once: a reload must read back what the
-      // app persisted, not the pristine seed again.
-      await page.addInitScript((entries: Record<string, string>) => {
-        if (localStorage.getItem("__e2e-seeded")) {
-          return;
-        }
-        for (const [key, value] of Object.entries(entries)) {
-          localStorage.setItem(key, value);
-        }
-        localStorage.setItem("__e2e-seeded", "1");
-      }, seed);
+    if (!opts.denyMic) {
+      await context.grantPermissions(["microphone"], { origin: APP_URL });
     }
+    const page = await context.newPage();
+    const seed: Record<string, string> = {
+      ...opts.seed,
+      "voice-settings": JSON.stringify({ warmMicOnBoot: false, ...opts.settings }),
+    };
+    // Init scripts run on EVERY navigation, so the seed is written once: a reload must read back what the
+    // app persisted, not the pristine seed again.
+    await page.addInitScript((entries: Record<string, string>) => {
+      if (localStorage.getItem("__e2e-seeded")) {
+        return;
+      }
+      for (const [key, value] of Object.entries(entries)) {
+        localStorage.setItem(key, value);
+      }
+      localStorage.setItem("__e2e-seeded", "1");
+    }, seed);
     if (!opts.skipGoto) {
       await page.goto(APP_URL);
       await waitForVoiceReady(page);
@@ -92,17 +108,17 @@ export async function launchWithClip(clipPath: string, opts: LaunchOptions = {})
 }
 
 /**
- * The canvas and the debug surface are up.
+ * The canvas, the injected toolbar button and the debug surface are up.
  *
- * Deliberately NOT waiting for `status().mic === "ok"`: getStatus() hands back the last emitted snapshot and
- * recorder.prepare() resolving does not emit, so mic stays "unknown" until the first arm. armHold() waits for
- * `recording` instead, which is the state the tests actually depend on.
+ * Deliberately NOT waiting for `status().mic === "ok"`: the mic is only acquired when the tool arms (the suite
+ * runs with `warmMicOnBoot: false`), so mic stays "unknown" until then. armHold() waits for `recording`, which is
+ * the state the tests actually depend on.
  */
 export async function waitForVoiceReady(page: Page): Promise<void> {
   await page.waitForSelector(".excalidraw canvas", { timeout: 30_000 });
   await page.waitForFunction(() => !!window.__excalidrawVoice, undefined, { timeout: 30_000 });
-  // getUserMedia is kicked off on mount; give it a moment so the first hold records from the clip's start.
-  await page.waitForTimeout(500);
+  // The toolbar is injected by a poll after the library's own toolbar row exists; tests click it by testid.
+  await page.waitForSelector('[data-testid="toolbar-voice"]', { timeout: 30_000 });
 }
 
 export const status = (page: Page): Promise<VoiceStatus> =>
@@ -185,23 +201,48 @@ export const sceneBBox = (t: Transform, pts: Pt[]) => bbox(pts.map((p) => toScen
 
 // --- pointer input -------------------------------------------------------
 
+export interface StrokeTiming {
+  /** ms between pointer samples. */
+  stepMs?: number;
+  /** Wait before pointer-down. 0 makes `mouse.up` → `mouse.down` of the next stroke a zero-gap pair (N2a). */
+  leadMs?: number;
+  /** Wait after pointer-up. The controller reads the finished element a tick + a frame later; 0 does not wait. */
+  settleMs?: number;
+}
+
 /**
  * Excalidraw throttles its drag handler with requestAnimationFrame, so a synchronous `mouse.move(...,{steps})`
  * collapses to a single point. Every step therefore gets its own frame.
+ *
+ * The settle wait is a parameter, not a constant: round 1 slept 120 ms after every pointer-up and thereby hid the
+ * capture race the zero-gap and disarm-in-window cases exist to hit (RETRO L3).
  */
-export async function drawStroke(page: Page, pts: Pt[], stepMs = 24): Promise<void> {
+export async function drawStroke(page: Page, pts: Pt[], timing: StrokeTiming = {}): Promise<void> {
+  const stepMs = timing.stepMs ?? 24;
+  const leadMs = timing.leadMs ?? stepMs;
+  const settleMs = timing.settleMs ?? 120;
   await page.mouse.move(pts[0]!.x, pts[0]!.y);
-  await page.waitForTimeout(stepMs);
+  if (leadMs > 0) {
+    await page.waitForTimeout(leadMs);
+  }
   await page.mouse.down();
   await page.waitForTimeout(stepMs);
   for (const p of pts.slice(1)) {
     await page.mouse.move(p.x, p.y);
     await page.waitForTimeout(stepMs);
   }
-  await page.waitForTimeout(stepMs);
   await page.mouse.up();
-  // The controller reads the finished element a tick + a frame after pointer-up.
-  await page.waitForTimeout(120);
+  if (settleMs > 0) {
+    await page.waitForTimeout(settleMs);
+  }
+}
+
+/** A palm contact / stylus jitter: a few screen px, no dwell. Must never become a shape. */
+export async function tap(page: Page, at: Pt, px = 3): Promise<void> {
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await page.mouse.move(at.x + px, at.y + Math.round(px / 2));
+  await page.mouse.up();
 }
 
 export const ellipsePath = (cx: number, cy: number, rx: number, ry: number, steps = 28): Pt[] => {
@@ -224,16 +265,94 @@ export const linePath = (from: Pt, to: Pt, steps = 16): Pt[] => {
   return pts;
 };
 
-/** Holds F9 and waits until the recorder is actually running, so the first stroke is never dropped. */
-export async function armHold(page: Page): Promise<void> {
+/**
+ * Holds F9 and waits until capture is actually running. Returns the wall clock of the key press: with
+ * `warmMicOnBoot` off that is also when getUserMedia is called, which is when Chromium starts playing the
+ * fake-audio file — so a fixture's own timeline can be scheduled from it (see waitUntilWall).
+ */
+export async function armHold(page: Page): Promise<number> {
+  const t0 = Date.now();
   await page.keyboard.down("F9");
   await page.waitForFunction(() => window.__excalidrawVoice!.status().recording === true, undefined, {
     timeout: 15_000,
   });
+  return t0;
 }
 
 export async function releaseHold(page: Page): Promise<void> {
   await page.keyboard.up("F9");
+}
+
+/** The capture clock (contracts-capture `VoiceCapture.now`) — the clock utterance onsets are stamped with. */
+export const captureNow = (page: Page): Promise<number> =>
+  page.evaluate(() => window.__excalidrawVoice!.capture!.now());
+
+/** Waits until the capture clock passes `ms`. Timings that must beat the pre-roll are expressed in this clock. */
+export async function waitCaptureUntil(page: Page, ms: number): Promise<void> {
+  for (;;) {
+    const now = await captureNow(page);
+    if (now >= ms) {
+      return;
+    }
+    await page.waitForTimeout(Math.min(250, Math.max(10, ms - now)));
+  }
+}
+
+/** Wall-clock scheduling relative to the F9 press, which is also when the fixture starts playing. */
+export async function waitUntilWall(page: Page, t0: number, ms: number): Promise<void> {
+  const left = t0 + ms - Date.now();
+  if (left > 0) {
+    await page.waitForTimeout(left);
+  }
+}
+
+export interface SeenUtterance extends UtteranceEvent {
+  /** capture-clock ms at which the event was delivered. */
+  at: number;
+}
+
+/**
+ * Chains a recorder onto the capture module's utterance callbacks (the controller assigned its own at
+ * construction and this wrapper calls it), so a test can schedule against real VAD boundaries instead of
+ * guessing where the speech in a clip lands.
+ */
+export async function recordUtterances(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const bucket: SeenUtterance[] = [];
+    (window as unknown as { __utterances: SeenUtterance[] }).__utterances = bucket;
+    const capture = window.__excalidrawVoice!.capture!;
+    const priorStart = capture.onUtteranceStart;
+    const priorEnd = capture.onUtteranceEnd;
+    capture.onUtteranceStart = (u) => {
+      bucket.push({ id: u.id, onsetMs: u.onsetMs, at: capture.now() });
+      priorStart?.(u);
+    };
+    capture.onUtteranceEnd = (u) => {
+      const seen = bucket.find((e) => e.id === u.id);
+      if (seen) {
+        seen.endMs = u.endMs;
+      }
+      priorEnd?.(u);
+    };
+  });
+}
+
+export const seenUtterances = (page: Page): Promise<SeenUtterance[]> =>
+  page.evaluate(() => (window as unknown as { __utterances: SeenUtterance[] }).__utterances ?? []);
+
+/** Resolves with the (1-based) nth utterance once its onset is known; `recordUtterances` must have run first. */
+export async function waitForUtterance(page: Page, nth: number, timeoutMs = 20_000): Promise<SeenUtterance> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const seen = await seenUtterances(page);
+    if (seen.length >= nth) {
+      return seen[nth - 1]!;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`no utterance #${nth} within ${timeoutMs} ms (saw ${seen.length})`);
+    }
+    await page.waitForTimeout(100);
+  }
 }
 
 export async function evidence(page: Page, name: string): Promise<string> {
@@ -250,32 +369,6 @@ interface Wav {
   channels: number;
   bits: number;
   data: Buffer;
-}
-
-function readWav(path: string): Wav {
-  const buf = readFileSync(path);
-  let offset = 12; // past "RIFF....WAVE"
-  let rate = 16_000;
-  let channels = 1;
-  let bits = 16;
-  let data: Buffer | null = null;
-  while (offset + 8 <= buf.length) {
-    const id = buf.toString("ascii", offset, offset + 4);
-    const size = buf.readUInt32LE(offset + 4);
-    const body = buf.subarray(offset + 8, offset + 8 + size);
-    if (id === "fmt ") {
-      channels = body.readUInt16LE(2);
-      rate = body.readUInt32LE(4);
-      bits = body.readUInt16LE(14);
-    } else if (id === "data") {
-      data = body;
-    }
-    offset += 8 + size + (size % 2);
-  }
-  if (!data) {
-    throw new Error(`no data chunk in ${path}`);
-  }
-  return { rate, channels, bits, data };
 }
 
 function writeWav(path: string, wav: Wav): void {
@@ -303,58 +396,5 @@ export function ensureSilenceClip(): string {
   if (!existsSync(path)) {
     writeWav(path, { rate: 16_000, channels: 1, bits: 16, data: Buffer.alloc(16_000 * 2 * 2) });
   }
-  return path;
-}
-
-/**
- * jfk.wav with its inter-sentence pauses cut down to 150 ms.
- *
- * G2 assigns ~1.2 s of the LOOPING clip to each shape, and raw jfk.wav has a 1.2 s pause in it: a segment that
- * happened to land on that pause would transcribe as "" and the app would (correctly) drop its placeholder,
- * failing the gate for a reason that has nothing to do with parallelism. Densifying keeps the audio real speech
- * from the same speaker while making every 1.2 s window carry words.
- */
-export function ensureDenseClip(): string {
-  const path = fixture("jfk-dense.wav");
-  if (existsSync(path)) {
-    return path;
-  }
-  const src = readWav(fixture("jfk.wav"));
-  const samples = new Int16Array(src.data.buffer, src.data.byteOffset, src.data.length / 2);
-  const frame = Math.round(src.rate * 0.02);
-  const keepPause = Math.round(src.rate * 0.15);
-  const loud: boolean[] = [];
-  for (let i = 0; i < samples.length; i += frame) {
-    let sum = 0;
-    const end = Math.min(samples.length, i + frame);
-    for (let j = i; j < end; j += 1) {
-      sum += samples[j]! * samples[j]!;
-    }
-    loud.push(Math.sqrt(sum / Math.max(1, end - i)) / 32_768 > 0.02);
-  }
-  const out: number[] = [];
-  let pause = 0;
-  for (let f = 0; f < loud.length; f += 1) {
-    const start = f * frame;
-    const end = Math.min(samples.length, start + frame);
-    // Keep a frame when it is loud or within one frame of speech; otherwise let at most keepPause of quiet through.
-    const near = loud[f] || loud[f - 1] === true || loud[f + 1] === true;
-    if (near) {
-      pause = 0;
-    } else {
-      pause += end - start;
-      if (pause > keepPause) {
-        continue;
-      }
-    }
-    for (let j = start; j < end; j += 1) {
-      out.push(samples[j]!);
-    }
-  }
-  const data = Buffer.alloc(out.length * 2);
-  for (let i = 0; i < out.length; i += 1) {
-    data.writeInt16LE(out[i]!, i * 2);
-  }
-  writeWav(path, { rate: src.rate, channels: src.channels, bits: 16, data });
   return path;
 }

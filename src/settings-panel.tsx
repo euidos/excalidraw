@@ -8,10 +8,18 @@ export interface SettingsPanelProps {
   settings: VoiceSettings;
   onChange: (settings: VoiceSettings) => void;
   checkHealth: CheckHealth;
+  /** Live mic RMS 0..1 from the capture module, so the VAD threshold can be set against real room noise. */
+  level: number;
 }
 
 type MicOption = { deviceId: string; label: string };
 type TestState = { kind: "idle" } | { kind: "testing" } | { kind: "done"; text: string; ok: boolean };
+
+/** Full-scale of the level meter; the VAD range (0.003..0.05) has to be readable inside it. */
+const VAD_MAX = 0.06;
+const pct = (v: number) => Math.max(0, Math.min(100, (v / VAD_MAX) * 100));
+const clamp = (v: number, lo: number, hi: number, fallback: number) =>
+  Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
 
 const LANGUAGES: Array<[string, string]> = [
   ["", "auto"],
@@ -21,7 +29,7 @@ const LANGUAGES: Array<[string, string]> = [
   ["zh", "中文 (zh)"],
 ];
 
-export function SettingsPanel({ open, onClose, settings, onChange, checkHealth }: SettingsPanelProps) {
+export function SettingsPanel({ open, onClose, settings, onChange, checkHealth, level }: SettingsPanelProps) {
   const [mics, setMics] = useState<MicOption[]>([]);
   const [test, setTest] = useState<TestState>({ kind: "idle" });
 
@@ -138,6 +146,63 @@ export function SettingsPanel({ open, onClose, settings, onChange, checkHealth }
           max={400}
           value={settings.lineMaxFontSize}
           onChange={(e) => patch({ lineMaxFontSize: Number(e.target.value) || settings.lineMaxFontSize })}
+        />
+      </label>
+
+      <label className="voice-settings__row">
+        <span>Line min font size</span>
+        <input
+          type="number"
+          min={6}
+          max={400}
+          value={settings.lineMinFontSize}
+          onChange={(e) => patch({ lineMinFontSize: Number(e.target.value) || settings.lineMinFontSize })}
+        />
+      </label>
+
+      <label className="voice-settings__row">
+        <span>Pre-roll (ms)</span>
+        <input
+          type="number"
+          min={0}
+          max={4000}
+          step={100}
+          value={settings.preRollMs}
+          onChange={(e) => patch({ preRollMs: clamp(Number(e.target.value), 0, 4000, settings.preRollMs) })}
+        />
+      </label>
+      <p className="voice-settings__help">speech may start this long before its stroke</p>
+
+      <label className="voice-settings__row">
+        <span>VAD threshold</span>
+        <span className="voice-settings__slider">
+          {/* A range, not a number field: on the wall panel there is no keyboard, and a half-typed "0.0" would clamp away. */}
+          <input
+            type="range"
+            min={0.003}
+            max={0.05}
+            step={0.001}
+            value={settings.vadThreshold}
+            onChange={(e) => patch({ vadThreshold: clamp(Number(e.target.value), 0.003, 0.05, settings.vadThreshold) })}
+          />
+          <output>{settings.vadThreshold.toFixed(3)}</output>
+        </span>
+      </label>
+      <div className="voice-settings__row">
+        <span>Level</span>
+        <div className="voice-meter" role="presentation">
+          {/* Both the bar and the threshold marker use the same 0..VAD_MAX scale, so "is my room above the line" is readable at a glance. */}
+          <div className="voice-meter__fill" style={{ width: `${pct(level)}%` }} />
+          <div className="voice-meter__mark" style={{ left: `${pct(settings.vadThreshold)}%` }} />
+        </div>
+      </div>
+
+      <label className="voice-settings__row voice-settings__row--check">
+        <span>Warm mic on boot</span>
+        <input
+          type="checkbox"
+          checked={settings.warmMicOnBoot}
+          onChange={(e) => patch({ warmMicOnBoot: e.target.checked })}
         />
       </label>
 

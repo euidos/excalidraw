@@ -11,8 +11,17 @@ function normalizeBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
+/**
+ * The extension, not just the bytes, is validated by OpenAI and by whisper.cpp's strict server, so it has to match
+ * what capture.ts actually cut (round 2 sends 16-bit PCM WAV, round 1 sent webm).
+ */
 function fileNameFor(blob: Blob): string {
-  return blob.type.includes("ogg") ? "segment.ogg" : "segment.webm";
+  const type = (blob.type || "").toLowerCase();
+  if (type.includes("wav")) return "segment.wav";
+  if (type.includes("ogg")) return "segment.ogg";
+  if (type.includes("mpeg") || type.includes("mp3")) return "segment.mp3";
+  if (type.includes("mp4") || type.includes("m4a")) return "segment.m4a";
+  return "segment.webm";
 }
 
 export const transcribe: Transcribe = async (

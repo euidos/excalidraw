@@ -1,18 +1,16 @@
 /**
  * App.tsx — wires the voice modules around <Excalidraw/>.
- * Nothing here holds Excalidraw state: the controller owns the state machine, persist.ts owns storage,
- * and this file only creates the singletons once the imperative API exists and forwards status to the toolbar.
+ * Nothing here holds Excalidraw state: the controller owns the state machine, capture.ts owns the microphone,
+ * persist.ts owns storage, and this file only creates the singletons once the imperative API exists and forwards
+ * status to the toolbar.
  */
 import { Excalidraw, useHandleLibrary } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createSegmentRecorder } from "./audio";
-import type {
-  SegmentRecorder,
-  ToolbarHandle,
-  VoiceSettings,
-  VoiceStatus,
-} from "./contracts";
+import { assignUtterance } from "./assign";
+import { createVoiceCapture } from "./capture";
+import type { ToolbarHandle, VoiceSettings, VoiceStatus } from "./contracts";
+import type { VoiceCapture } from "./contracts-capture";
 import { createVoiceController } from "./controller";
 import { fit } from "./fit";
 import { createPersister, libraryAdapter, loadInitialData } from "./persist";
@@ -61,9 +59,14 @@ export default function App() {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [settings, setSettings] = useState<VoiceSettings>(() => loadSettings());
   const [panelOpen, setPanelOpen] = useState(false);
+  const [level, setLevel] = useState(0);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<ToolbarHandle | null>(null);
-  const recorderRef = useRef<SegmentRecorder | null>(null);
+  const captureRef = useRef<VoiceCapture | null>(null);
+  /** The deviceId the live capture was built for, so a settings write that did not change it re-acquires nothing. */
+  const preparedDeviceRef = useRef<string | null>(null);
+  /** Read inside capture.onLevel: the meter is a prop of the panel, so a closed panel must not re-render the app. */
+  const panelOpenRef = useRef(false);
 
   const persister = useMemo(createPersister, []);
   const initialData = useMemo(() => loadInitialData(), []);
@@ -77,15 +80,34 @@ export default function App() {
   useEffect(() => subscribe(setSettings), []);
 
   useEffect(() => {
+    panelOpenRef.current = panelOpen;
+    if (!panelOpen) {
+      setLevel(0);
+    }
+  }, [panelOpen]);
+
+  useEffect(() => {
     if (!api) {
       return;
     }
     const current = loadSettings();
-    const recorder = createSegmentRecorder({ minDurationMs: current.minSegmentMs });
-    recorderRef.current = recorder;
+    const capture = createVoiceCapture({
+      vad: { threshold: current.vadThreshold, minUtteranceMs: current.minSegmentMs },
+    });
+    captureRef.current = capture;
+    preparedDeviceRef.current = current.deviceId;
+    // Assigned BEFORE the controller, which chains rather than replaces the handler it finds: the toolbar reads the
+    // level off VoiceStatus, and only the open settings panel needs it as React state.
+    capture.onLevel = (rms: number) => {
+      if (panelOpenRef.current) {
+        setLevel(rms);
+      }
+    };
+
     const controller = createVoiceController({
       api,
-      recorder,
+      capture,
+      assign: assignUtterance,
       transcribe,
       fit,
       recognize: recognizeStroke,
@@ -93,11 +115,13 @@ export default function App() {
       onStatus: (status: VoiceStatus) => toolbarRef.current?.update(status),
     });
 
-    // Warm the mic so the first F9 press records instantly. prepare() emits no status of its own, so push the
-    // resolved mic state to the toolbar by hand — otherwise a denied/missing mic stays invisible until the first arm.
-    void recorder.prepare(current.deviceId || undefined).then(() => {
-      toolbarRef.current?.update(controller.getStatus());
-    });
+    // Warm the mic so the first F9 press records instantly. The e2e turns this off to time its fixtures; without it
+    // nothing touches the microphone until the controller arms.
+    if (current.warmMicOnBoot) {
+      void capture.prepare(current.deviceId || undefined).then(() => {
+        toolbarRef.current?.update(controller.getStatus());
+      });
+    }
 
     let cancelled = false;
     let poll: ReturnType<typeof setTimeout> | null = null;
@@ -143,6 +167,7 @@ export default function App() {
     const debug = {
       api,
       controller,
+      capture,
       fit,
       recognize: recognizeStroke,
       status: () => controller.getStatus(),
@@ -162,18 +187,35 @@ export default function App() {
       toolbarRef.current?.unmount();
       toolbarRef.current = null;
       controller.dispose();
-      recorder.dispose();
-      recorderRef.current = null;
+      capture.dispose();
+      captureRef.current = null;
+      preparedDeviceRef.current = null;
       if (window.__excalidrawVoice === debug) {
         delete window.__excalidrawVoice;
       }
     };
   }, [api]);
 
-  // Re-acquire the mic when the device selection changes (cheap and idempotent when it did not).
+  // Re-acquire the mic when the device selection changes. While the mic is still untouched ("unknown") there is
+  // nothing to switch: the controller prepares the live deviceId itself when it arms.
   useEffect(() => {
-    void recorderRef.current?.prepare(settings.deviceId || undefined);
+    const capture = captureRef.current;
+    if (!capture || preparedDeviceRef.current === settings.deviceId) {
+      return;
+    }
+    preparedDeviceRef.current = settings.deviceId;
+    if (capture.mic !== "unknown") {
+      void capture.prepare(settings.deviceId || undefined);
+    }
   }, [settings.deviceId]);
+
+  // VAD parameters are live; a new capture is built with these already applied, so the mount run is a no-op.
+  useEffect(() => {
+    captureRef.current?.setVad({
+      threshold: settings.vadThreshold,
+      minUtteranceMs: settings.minSegmentMs,
+    });
+  }, [settings.vadThreshold, settings.minSegmentMs]);
 
   const renderTopRightUI = useCallback(
     () => (
@@ -208,6 +250,7 @@ export default function App() {
         settings={settings}
         onChange={onSettingsChange}
         checkHealth={checkHealth}
+        level={level}
       />
     </div>
   );

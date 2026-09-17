@@ -2,14 +2,22 @@
  * Injects the voice tool into Excalidraw's own desktop toolbar by mirroring its markup
  * (label.ToolIcon > div.ToolIcon__icon), so the button inherits the library's sizing and theming.
  * DOM-level rather than React because the toolbar is rendered inside the library's own tree.
+ *
+ * Round 2 (R6): a tap of ANY duration toggles the latch. The long-press / contextmenu path to settings is gone —
+ * on the IR frame a "tap" is routinely 700 ms+, so long-press stole the founder's latch taps and opened settings
+ * instead. Settings now live behind App's top-right gear; `opts.onOpenSettings` stays in the contract but no
+ * gesture on this button is wired to it.
  */
 import type { MountVoiceToolbarButton, ToolbarHandle, ToolbarOptions, VoiceStatus } from "./contracts";
 
-const LONG_PRESS_MS = 600;
+/** A press that travels further than this (CSS px) is a drag/palm smear, not a tap. */
+const TAP_SLOP_PX = 24;
 
 const MIC_SVG = `<svg aria-hidden="true" focusable="false" role="img" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>`;
 
 const RETRY_SVG = `<svg aria-hidden="true" focusable="false" role="img" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`;
+
+const BASE_TITLE = "Voice area — hold F9 or tap to latch";
 
 function findToolbarRow(root: HTMLElement): HTMLElement | null {
   const rows = root.querySelectorAll<HTMLElement>(".App-toolbar .Stack_horizontal");
@@ -42,7 +50,7 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
 ): ToolbarHandle => {
   const button = document.createElement("label");
   button.className = "ToolIcon Shape voice-tool";
-  button.title = "Voice area — hold F9 or tap to latch";
+  button.title = BASE_TITLE;
   button.setAttribute("data-testid", "toolbar-voice");
   button.setAttribute("role", "button");
   button.setAttribute("aria-label", "Voice area");
@@ -61,47 +69,45 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
   retry.hidden = true;
   retry.innerHTML = `<div class="ToolIcon__icon">${RETRY_SVG}</div>`;
 
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-  let longPressFired = false;
+  /** Pointer that currently owns the press, and where it went down (for the slop check). */
+  let pressId: number | null = null;
+  let pressX = 0;
+  let pressY = 0;
 
-  const clearLongPress = () => {
-    if (longPressTimer !== null) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
+  const endPress = () => {
+    pressId = null;
+    button.classList.remove("voice-tool--pressed");
   };
 
   const onPointerDown = (e: PointerEvent) => {
     e.preventDefault(); // keep focus on the canvas and stop touch scroll/selection
-    longPressFired = false;
-    clearLongPress();
-    longPressTimer = setTimeout(() => {
-      longPressFired = true;
-      opts.onOpenSettings();
-    }, LONG_PRESS_MS);
+    pressId = e.pointerId;
+    pressX = e.clientX;
+    pressY = e.clientY;
+    // The IR frame reports no hover, so the press class is the only feedback that the tap registered at all.
+    button.classList.add("voice-tool--pressed");
   };
   const onPointerUp = (e: PointerEvent) => {
     e.preventDefault();
-    clearLongPress();
-    if (!longPressFired) {
+    if (pressId !== e.pointerId) {
+      return;
+    }
+    const moved = Math.hypot(e.clientX - pressX, e.clientY - pressY);
+    endPress();
+    if (moved <= TAP_SLOP_PX) {
       opts.onToggle();
     }
   };
-  const onPointerCancel = () => {
-    clearLongPress();
-  };
-  const onContextMenu = (e: MouseEvent) => {
-    e.preventDefault();
-    clearLongPress();
-    longPressFired = true;
-    opts.onOpenSettings();
+  const onPointerCancel = (e: PointerEvent) => {
+    if (pressId === null || pressId === e.pointerId) {
+      endPress();
+    }
   };
 
   button.addEventListener("pointerdown", onPointerDown);
   button.addEventListener("pointerup", onPointerUp);
   button.addEventListener("pointercancel", onPointerCancel);
   button.addEventListener("pointerleave", onPointerCancel);
-  button.addEventListener("contextmenu", onContextMenu);
 
   const onRetryDown = (e: PointerEvent) => e.preventDefault();
   const onRetryUp = (e: PointerEvent) => {
@@ -166,11 +172,23 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       if (badge.textContent !== label) {
         badge.textContent = label;
       }
+      // The wall panel has no console; the tooltip is where a failure can be read back.
+      const title = status.lastError ? `${BASE_TITLE}\n⚠ ${status.lastError}` : BASE_TITLE;
+      if (button.title !== title) {
+        button.title = title;
+      }
       retry.hidden = status.failed <= 0;
+      const retryTitle =
+        status.failed > 0
+          ? `Retry ${status.failed} failed transcription${status.failed === 1 ? "" : "s"}`
+          : "Retry failed transcriptions";
+      if (retry.title !== retryTitle) {
+        retry.title = retryTitle;
+      }
     },
     unmount() {
       observer.disconnect();
-      clearLongPress();
+      endPress();
       if (frame !== null) {
         cancelAnimationFrame(frame);
         frame = null;
@@ -179,7 +197,6 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       button.removeEventListener("pointerup", onPointerUp);
       button.removeEventListener("pointercancel", onPointerCancel);
       button.removeEventListener("pointerleave", onPointerCancel);
-      button.removeEventListener("contextmenu", onContextMenu);
       retry.removeEventListener("pointerdown", onRetryDown);
       retry.removeEventListener("pointerup", onRetryUp);
       button.remove();

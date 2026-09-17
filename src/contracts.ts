@@ -105,29 +105,10 @@ export interface FitModule {
 }
 
 /**
- * RETIRED in round 2 (replaced by VoiceCapture in contracts-capture.ts; src/audio.ts is deleted at integration).
- * audio.ts — one MediaRecorder per segment on a long-lived MediaStream.
- * prepare() acquires the stream once (getUserMedia) and keeps it so start() is instant; start() begins a segment;
- * cut() ends the current segment and immediately starts the next, resolving with the finished blob; stop() ends the
- * last segment (mic stays acquired). Blobs shorter than minDurationMs resolve null.
+ * Microphone state. Audio capture itself is `VoiceCapture` in contracts-capture.ts (implemented by capture.ts);
+ * the round-1 MediaRecorder segmenter that used to live here was retired with src/audio.ts.
  */
 export type MicState = "unknown" | "ok" | "denied" | "missing" | "error";
-export interface SegmentRecorder {
-  prepare(deviceId?: string): Promise<MicState>;
-  start(): Promise<void>;
-  cut(): Promise<Blob | null>;
-  stop(): Promise<Blob | null>;
-  readonly recording: boolean;
-  readonly mic: MicState;
-  /** Called ~10×/s with an RMS level 0..1 while recording (for the toolbar indicator). Optional. */
-  onLevel?: (rms: number) => void;
-  dispose(): void;
-}
-export interface RecorderOptions {
-  mimeType?: string; // default "audio/webm;codecs=opus" when supported
-  minDurationMs?: number; // default 300
-}
-export type CreateSegmentRecorder = (opts?: RecorderOptions) => SegmentRecorder;
 
 /** stt.ts — client for the OpenAI-compatible endpoint. */
 export interface SttOptions {
@@ -193,6 +174,14 @@ export interface VoiceStatus {
   utterances: number;
   orphans: number;
   lastTranscript?: string;
+  /**
+   * Transcripts that came back and were thrown away (empty, or a known near-silence hallucination). Without this
+   * the founder cannot tell "the room was silent" from "whisper answered and we filtered it": both leave the
+   * shape bare with no ⚠ and no retry.
+   */
+  dropped: number;
+  /** The text of the last drop, so the filter can be audited from the debug surface. */
+  lastDropped?: string;
 }
 export interface VoiceControllerDeps {
   api: ExcalidrawImperativeAPI;
@@ -234,6 +223,8 @@ export type MountVoiceToolbarButton = (excalidrawRoot: HTMLElement, opts: Toolba
 export interface VoiceDebug {
   api: ExcalidrawImperativeAPI;
   controller: VoiceController;
+  /** The live capture module, so the e2e can read mic state / cut its own WAV without touching app code. */
+  capture?: VoiceCapture;
   fit: FitModule;
   recognize: RecognizeStroke;
   status(): VoiceStatus;

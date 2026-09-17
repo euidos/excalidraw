@@ -3,8 +3,14 @@
  *
  * Every measurement is delegated to the library: `convertToExcalidrawElements` runs the same
  * `bindTextToContainer` → `redrawTextBoundingBox` path the editor itself uses, so a throwaway "probe" element
- * tells us exactly what the editor would do with a given font size — including growing the container when the
- * text does not fit. Fitting is therefore a binary search for the largest size that leaves the container alone.
+ * tells us exactly what the editor would do with a given font size — including growing a container the text does
+ * not fit in, and wrapping a label to the container's width. Fitting an area is a binary search for the largest
+ * size that leaves the container alone; fitting a line is the largest size that still fits on one line, and below
+ * that floor a block wrapped to the line's own length (R5).
+ *
+ * That measurement only throws where a document's font metrics are missing — outside a browser, which this module
+ * is not contracted to run in. So there is no second, always-wrong measurement path here: every entry point runs
+ * inside `guarded`, which warns once and hands the caller its own elements back unchanged.
  *
  * Probes always carry fresh ids: `redrawTextBoundingBox` writes the grown height into a module-level cache keyed
  * by container id, and polluting that cache for a real container would make the editor snap it back later.
@@ -33,8 +39,10 @@ import type {
 
 /** Container width/height may drift by this much and still count as "the text fits". */
 const FIT_TOLERANCE = 0.5;
-/** Gap between a line and the baseline box of the text sitting on it (scene px). */
+/** Gap between a line and the box of the text sitting on it (scene px). */
 const LINE_TEXT_GAP = 4;
+/** The library's own BOUND_TEXT_PADDING: a container wraps its label at (container width − 2 × this). */
+const BOUND_TEXT_PADDING = 5;
 const PLACEHOLDER_FRAMES = ["·", "··", "···"] as const;
 const PLACEHOLDER_HEIGHT_RATIO = 0.35;
 const PLACEHOLDER_MIN_FONT_SIZE = 12;
@@ -57,15 +65,38 @@ type ShapeProps = {
   opacity: number;
   roundness: { type: number } | null;
 };
-type LabelProps = {
-  fontFamily: FontFamilyValues;
-  strokeColor: string;
-  opacity: number;
-};
+/** Everything a piece of text needs that is not its content, size or position. */
+type LabelProps = { fontFamily: FontFamilyValues; strokeColor: string; opacity: number };
 type BoundPair = { container: ExcalidrawElement; text: ExcalidrawTextElement };
+/** The stand-in shape a measurement is made in: everything about it except the text and its size. */
+type Probe = { type: AreaType; geom: Geometry; props: ShapeProps; label: LabelProps };
 type LineGeometry = { mid: Point; dx: number; dy: number; length: number };
+/** x/y are the top-left BEFORE rotation; Excalidraw spins a text element around its own centre. */
+type LineTextLayout = {
+  text: string;
+  originalText: string;
+  fontSize: number;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  angle: number;
+  autoResize: boolean;
+};
 
 const AREA_TYPES: readonly string[] = ["rectangle", "ellipse", "diamond"];
+
+/** Style never changes text metrics, so a measurement-only probe container uses one fixed, cheap style. */
+const MEASURE_PROPS: ShapeProps = {
+  strokeColor: "#000000",
+  backgroundColor: "transparent",
+  fillStyle: "solid",
+  strokeWidth: 1,
+  strokeStyle: "solid",
+  roughness: 1,
+  opacity: 100,
+  roundness: null,
+};
 
 const clamp = (value: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, value));
 
@@ -82,45 +113,54 @@ const isLinearElement = <T extends ExcalidrawElement>(el: T | null | undefined):
 
 const isAreaType = (type: string): type is AreaType => AREA_TYPES.includes(type);
 
+/**
+ * The module's single failure boundary. A throw from the library means its text metrics are gone, which cannot
+ * happen in the browser this module is contracted to run in; if it ever does, the caller gets its own elements
+ * back untouched rather than a half-laid-out scene.
+ */
+function guarded<T>(what: string, fallback: T, body: () => T): T {
+  try {
+    return body();
+  } catch (err) {
+    console.warn(`fit: ${what} failed, leaving the elements unchanged`, err);
+    return fallback;
+  }
+}
+
 function resolveOptions(opts?: FitOptions) {
   const maxFontSize = clamp(Math.round(num(opts?.maxFontSize, 96)), 1, FONT_SIZE_CEILING);
   const minFontSize = clamp(Math.round(num(opts?.minFontSize, 10)), 1, maxFontSize);
   const lineMaxFontSize = clamp(Math.round(num(opts?.lineMaxFontSize, 36)), minFontSize, FONT_SIZE_CEILING);
-  return { maxFontSize, minFontSize, lineMaxFontSize };
+  const lineMinFontSize = clamp(Math.round(num(opts?.lineMinFontSize, 14)), 1, lineMaxFontSize);
+  return { maxFontSize, minFontSize, lineMaxFontSize, lineMinFontSize };
 }
 
 /** Matches `App.getCurrentItemRoundness`: rectangles use the adaptive radius, everything else proportional. */
-function roundnessFor(type: string, roundness: StyleSnapshot["roundness"]): ShapeProps["roundness"] {
+function roundnessFor(type: string, roundness: StyleSnapshot["roundness"] | null): ShapeProps["roundness"] {
   if (roundness !== "round") {
     return null;
   }
   return { type: type === "rectangle" ? ROUNDNESS.ADAPTIVE_RADIUS : ROUNDNESS.PROPORTIONAL_RADIUS };
 }
 
-function propsFromStyle(style: StyleSnapshot, type: string, strokeStyle: StrokeStyle): ShapeProps {
+/**
+ * Props for a shape or for the probe that stands in for one. A new shape takes the user's style snapshot (whose
+ * roundness is the appState string); a probe of an element the user already drew must copy that element's own
+ * style, or the probe measures a different shape than the one on the canvas.
+ */
+function shapeProps(src: StyleSnapshot | ExcalidrawElement, type: string, strokeStyle: StrokeStyle): ShapeProps {
+  const roundness = src.roundness;
   return {
-    strokeColor: style.strokeColor,
-    backgroundColor: style.backgroundColor,
-    fillStyle: style.fillStyle,
-    strokeWidth: num(style.strokeWidth, 1),
+    strokeColor: src.strokeColor,
+    backgroundColor: src.backgroundColor,
+    fillStyle: src.fillStyle,
+    strokeWidth: num(src.strokeWidth, 1),
     strokeStyle,
-    roughness: num(style.roughness, 1),
-    opacity: clamp(num(style.opacity, 100), 0, 100),
-    roundness: roundnessFor(type, style.roundness),
-  };
-}
-
-/** A probe must look exactly like the real element, so its style is read off the element, not the snapshot. */
-function propsFromElement(el: ExcalidrawElement, strokeStyle: StrokeStyle): ShapeProps {
-  return {
-    strokeColor: el.strokeColor,
-    backgroundColor: el.backgroundColor,
-    fillStyle: el.fillStyle,
-    strokeWidth: num(el.strokeWidth, 1),
-    strokeStyle,
-    roughness: num(el.roughness, 1),
-    opacity: clamp(num(el.opacity, 100), 0, 100),
-    roundness: el.roundness ? { type: el.roundness.type } : null,
+    roughness: num(src.roughness, 1),
+    opacity: clamp(num(src.opacity, 100), 0, 100),
+    roundness: typeof roundness === "object" && roundness !== null
+      ? { type: roundness.type }
+      : roundnessFor(type, roundness),
   };
 }
 
@@ -136,11 +176,9 @@ function geometryOf(el: ExcalidrawElement): Geometry {
 
 function geometryOfShape(shape: StrokeShape): Geometry {
   if (shape.kind === "line") {
-    const x = Math.min(num(shape.start?.x), num(shape.end?.x));
-    const y = Math.min(num(shape.start?.y), num(shape.end?.y));
     return {
-      x,
-      y,
+      x: Math.min(num(shape.start?.x), num(shape.end?.x)),
+      y: Math.min(num(shape.start?.y), num(shape.end?.y)),
       width: Math.max(1, Math.abs(num(shape.end?.x) - num(shape.start?.x))),
       height: Math.max(1, Math.abs(num(shape.end?.y) - num(shape.start?.y))),
       angle: 0,
@@ -155,6 +193,27 @@ function geometryOfShape(shape: StrokeShape): Geometry {
   };
 }
 
+/**
+ * The geometry the user's own stroke had, before any growth our placeholder caused. Lines keep their points, so
+ * only areas have anything to restore; without a usable shape the container is left exactly as it is.
+ */
+function originalGeometry(
+  target: VoiceTarget | undefined,
+  container: ExcalidrawElement,
+): { x?: number; y?: number; width?: number; height?: number } {
+  const shape = target?.shape;
+  if (!shape || shape.kind === "line" || isLinearElement(container)) {
+    return {};
+  }
+  const { x, y, width, height } = geometryOfShape(shape);
+  return { x, y, width, height };
+}
+
+/** Undo the container growth a placeholder caused: a shape the founder drew is the size they drew it. */
+function restoreShape(container: ExcalidrawElement, target: VoiceTarget): ExcalidrawElement {
+  return newElementWith(container, originalGeometry(target, container));
+}
+
 function withTextBinding(bound: readonly BoundElement[] | null, textId: string): BoundElement[] {
   // A container may hold only one bound text; a stale one would render on top of ours.
   const kept = (bound ?? []).filter((entry) => entry && entry.type !== "text");
@@ -165,45 +224,43 @@ function withoutTextBinding(bound: readonly BoundElement[] | null, textId: strin
   return (bound ?? []).filter((entry) => entry && entry.id !== textId);
 }
 
-/**
- * Builds a container + bound text through the library. Returns null when the library could not produce the pair
- * (only reachable when text measurement itself is unavailable, i.e. outside a browser).
- */
-function probeBoundPair(
-  type: AreaType,
-  geom: Geometry,
-  props: ShapeProps,
-  label: LabelProps,
-  text: string,
-  fontSize: number,
-): BoundPair | null {
-  try {
-    const skeleton = {
-      type,
-      x: geom.x,
-      y: geom.y,
-      width: geom.width,
-      height: geom.height,
-      angle: geom.angle,
-      ...props,
-      label: {
-        text,
-        fontSize,
-        fontFamily: label.fontFamily,
-        strokeColor: label.strokeColor,
-        opacity: label.opacity,
-        textAlign: "center",
-        verticalAlign: "middle",
-      },
-    } as unknown as ExcalidrawElementSkeleton;
-    const built = convertToExcalidrawElements([skeleton]);
-    const textEl = built.find(isTextElement);
-    const container = built.find((el) => el.id === textEl?.containerId);
-    return textEl && container ? { container, text: textEl } : null;
-  } catch (err) {
-    console.warn("fit: could not lay out bound text", err);
-    return null;
+/** One text element through the library — the only text factory and the only text measurement in this module. */
+function newText(props: { text: string; fontSize: number; label: LabelProps; x?: number; y?: number }) {
+  const built = convertToExcalidrawElements([
+    {
+      type: "text",
+      x: num(props.x),
+      y: num(props.y),
+      text: props.text,
+      fontSize: clamp(Math.round(num(props.fontSize, 20)), 1, FONT_SIZE_CEILING),
+      fontFamily: props.label.fontFamily,
+      strokeColor: props.label.strokeColor,
+      opacity: props.label.opacity,
+    },
+  ]);
+  const textEl = built.find(isTextElement);
+  if (!textEl) {
+    throw new Error("the library produced no text element");
   }
+  return textEl;
+}
+
+/** Builds a container + bound text through the library, i.e. the editor's own layout for that pair. */
+function probeBoundPair(probe: Probe, text: string, fontSize: number): BoundPair {
+  const built = convertToExcalidrawElements([
+    {
+      type: probe.type,
+      ...probe.geom,
+      ...probe.props,
+      label: { text, fontSize, ...probe.label, textAlign: "center", verticalAlign: "middle" },
+    } as unknown as ExcalidrawElementSkeleton,
+  ]);
+  const textEl = built.find(isTextElement);
+  const container = built.find((el) => el.id === textEl?.containerId);
+  if (!textEl || !container) {
+    throw new Error("the library produced no bound text pair");
+  }
+  return { container, text: textEl };
 }
 
 const containerUnchanged = (built: ExcalidrawElement, geom: Geometry) =>
@@ -211,32 +268,27 @@ const containerUnchanged = (built: ExcalidrawElement, geom: Geometry) =>
 
 /**
  * Largest integer font size in [minFontSize, maxFontSize] whose wrapped text does not grow the container.
- * Monotone in the font size, so a binary search is exact; if nothing fits, the smallest size is used and the
- * caller inherits the container the library grew.
+ * The floor is probed first: if even that grows the container, that growth is what the user gets (G4 documents
+ * it) and the search is over. Above the floor the fit is monotone in the font size, so a binary search is exact.
  */
-function fitBoundText(
-  type: AreaType,
-  geom: Geometry,
-  props: ShapeProps,
-  label: LabelProps,
-  text: string,
-  minFontSize: number,
-  maxFontSize: number,
-): BoundPair | null {
-  let lo = minFontSize;
+function fitBoundText(probe: Probe, text: string, minFontSize: number, maxFontSize: number): BoundPair {
+  let best = probeBoundPair(probe, text, minFontSize);
+  if (!containerUnchanged(best.container, probe.geom)) {
+    return best;
+  }
+  let lo = minFontSize + 1;
   let hi = Math.max(minFontSize, maxFontSize);
-  let best: BoundPair | null = null;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    const pair = probeBoundPair(type, geom, props, label, text, mid);
-    if (pair && containerUnchanged(pair.container, geom)) {
+    const pair = probeBoundPair(probe, text, mid);
+    if (containerUnchanged(pair.container, probe.geom)) {
       best = pair;
       lo = mid + 1;
     } else {
       hi = mid - 1;
     }
   }
-  return best ?? probeBoundPair(type, geom, props, label, text, minFontSize);
+  return best;
 }
 
 function rotate(p: Point, cx: number, cy: number, angle: number): Point {
@@ -253,12 +305,7 @@ function rotate(p: Point, cx: number, cy: number, angle: number): Point {
 function endpointsToGeometry(start: Point, end: Point): LineGeometry {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  return {
-    mid: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 },
-    dx,
-    dy,
-    length: Math.hypot(dx, dy),
-  };
+  return { mid: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }, dx, dy, length: Math.hypot(dx, dy) };
 }
 
 /** Scene-space endpoints of a line element (its own rotation included), falling back to the recognised stroke. */
@@ -273,9 +320,10 @@ function lineGeometry(el: ExcalidrawElement | null | undefined, shape?: StrokeSh
     const cx = num(el.x) + (Math.min(...xs) + Math.max(...xs)) / 2;
     const cy = num(el.y) + (Math.min(...ys) + Math.max(...ys)) / 2;
     const angle = num(el.angle);
-    const start = rotate({ x: num(el.x) + first.x, y: num(el.y) + first.y }, cx, cy, angle);
-    const end = rotate({ x: num(el.x) + last.x, y: num(el.y) + last.y }, cx, cy, angle);
-    return endpointsToGeometry(start, end);
+    return endpointsToGeometry(
+      rotate({ x: num(el.x) + first.x, y: num(el.y) + first.y }, cx, cy, angle),
+      rotate({ x: num(el.x) + last.x, y: num(el.y) + last.y }, cx, cy, angle),
+    );
   }
   if (shape && shape.kind === "line") {
     return endpointsToGeometry(
@@ -318,122 +366,76 @@ function upperNormal(g: LineGeometry): Point {
 
 /** Single-line metrics through the library's own text measurement. */
 function measureOnly(text: string, fontSize: number, fontFamily: number): { width: number; height: number } {
-  const size = clamp(Math.round(num(fontSize, 20)), 1, FONT_SIZE_CEILING);
-  const single = String(text ?? "").replace(/\s+/g, " ");
-  try {
-    const built = convertToExcalidrawElements([
-      {
-        type: "text",
-        x: 0,
-        y: 0,
-        text: single,
-        fontSize: size,
-        fontFamily: fontFamily as FontFamilyValues,
-      },
-    ]);
-    const textEl = built.find(isTextElement);
-    if (textEl) {
-      return { width: textEl.width, height: textEl.height };
-    }
-  } catch (err) {
-    console.warn("fit: text measurement failed", err);
-  }
-  // Crude but finite: roughly the advance width of a proportional font, so callers still get usable geometry.
-  return { width: single.length * size * 0.6, height: size * 1.25 };
+  const label: LabelProps = { fontFamily: fontFamily as FontFamilyValues, strokeColor: "#000000", opacity: 100 };
+  const { width, height } = newText({ text: String(text ?? "").replace(/\s+/g, " "), fontSize, label });
+  return { width, height };
 }
 
-type LineTextLayout = {
-  text: string;
-  fontSize: number;
-  width: number;
-  height: number;
-  x: number;
-  y: number;
-  angle: number;
-  autoResize: boolean;
-};
+/**
+ * Wraps `content` to `width` with the library's own wrapping — reachable only through a bound label, because
+ * `convertToExcalidrawElements` never wraps a free text element — and reports the block that comes out. The probe
+ * container is a rectangle wide enough that the max width of its label is exactly `width`.
+ */
+function wrapToWidth(content: string, fontSize: number, fontFamily: FontFamilyValues, width: number) {
+  const probe: Probe = {
+    type: "rectangle",
+    geom: { x: 0, y: 0, width: width + BOUND_TEXT_PADDING * 2, height: 1, angle: 0 },
+    props: MEASURE_PROPS,
+    label: { fontFamily, strokeColor: "#000000", opacity: 100 },
+  };
+  const { text, height } = probeBoundPair(probe, content, fontSize).text;
+  return { text, height };
+}
 
 /**
- * Places one line of text along a line element: centred on the midpoint, nudged to the upper side, rotated with
- * the slope. When even `minFontSize` is wider than the line, the size is kept and the element is pinned to the
- * line's length (`autoResize: false`) so the overflow spills symmetrically instead of running off one end.
+ * Places a transcript along a line: centred on the midpoint, sitting just above it, rotated with the slope.
+ * One line at the largest size in [minFontSize, maxFontSize] whose width fits the line; when even minFontSize is
+ * too wide, the text wraps to the line's length at minFontSize and the block grows upward from the line instead
+ * (R5 — shrinking to 10 px and spilling past both ends was unreadable on the wall).
  */
-function layoutLineText(
-  g: LineGeometry,
-  content: string,
-  fontFamily: FontFamilyValues,
-  minFontSize: number,
-  maxFontSize: number,
-): LineTextLayout {
+function layoutLineText(g: LineGeometry, content: string, fontFamily: FontFamilyValues, min: number, max: number) {
   const single = content.replace(/\s+/g, " ").trim() || content;
-  let lo = minFontSize;
-  let hi = Math.max(minFontSize, maxFontSize);
-  let chosen = minFontSize;
-  let metrics = measureOnly(single, minFontSize, fontFamily);
+  const length = Math.max(1, g.length);
+  let fitted = 0;
+  let metrics = { width: 0, height: 0 };
+  let lo = min;
+  let hi = Math.max(min, max);
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const m = measureOnly(single, mid, fontFamily);
-    if (m.width <= g.length) {
-      chosen = mid;
+    if (m.width <= length) {
+      fitted = mid;
       metrics = m;
       lo = mid + 1;
     } else {
       hi = mid - 1;
     }
   }
-  const overflows = metrics.width > g.length;
-  const width = overflows ? Math.max(1, g.length) : metrics.width;
+  const wrapped = fitted ? null : wrapToWidth(single, min, fontFamily, length);
+  const width = wrapped ? length : metrics.width;
+  const height = wrapped ? wrapped.height : metrics.height;
   const normal = upperNormal(g);
-  const offset = metrics.height / 2 + LINE_TEXT_GAP;
-  const cx = g.mid.x + normal.x * offset;
-  const cy = g.mid.y + normal.y * offset;
+  const offset = height / 2 + LINE_TEXT_GAP;
   return {
-    text: single,
-    fontSize: chosen,
+    text: wrapped ? wrapped.text : single,
+    originalText: single,
+    fontSize: fitted || min,
     width,
-    height: metrics.height,
-    // x/y are the top-left BEFORE rotation; Excalidraw spins the element around its own centre.
-    x: cx - width / 2,
-    y: cy - metrics.height / 2,
+    height,
+    x: g.mid.x + normal.x * offset - width / 2,
+    y: g.mid.y + normal.y * offset - height / 2,
     angle: readableAngle(g.dx, g.dy),
-    autoResize: !overflows,
+    // A wrapped block keeps the width it was wrapped to, so the editor re-wraps to it if the text is edited.
+    autoResize: !wrapped,
   };
 }
 
-/** A fresh, unbound text element carrying the given layout. */
-function newLineText(
-  layout: LineTextLayout,
-  fontFamily: FontFamilyValues,
-  strokeColor: string,
-  opacity: number,
-): ExcalidrawTextElement | null {
-  try {
-    const built = convertToExcalidrawElements([
-      {
-        type: "text",
-        x: layout.x,
-        y: layout.y,
-        text: layout.text,
-        fontSize: layout.fontSize,
-        fontFamily,
-        strokeColor,
-        opacity,
-        textAlign: "center",
-        verticalAlign: "middle",
-      },
-    ]);
-    const textEl = built.find(isTextElement);
-    return textEl ? applyLineLayout(textEl, layout) : null;
-  } catch (err) {
-    console.warn("fit: could not build line text", err);
-    return null;
-  }
-}
-
-function applyLineLayout(text: ExcalidrawTextElement, layout: LineTextLayout): ExcalidrawTextElement {
-  return newElementWith(text, {
+/** Puts a line layout on a text element: the caller's own on commit, a fresh one for a placeholder. */
+function applyLineLayout(text: ExcalidrawTextElement | null, layout: LineTextLayout, label: LabelProps) {
+  const base = text ?? newText({ text: layout.text, fontSize: layout.fontSize, label, x: layout.x, y: layout.y });
+  return newElementWith(base, {
     text: layout.text,
-    originalText: layout.text,
+    originalText: layout.originalText,
     fontSize: layout.fontSize,
     width: layout.width,
     height: layout.height,
@@ -443,6 +445,7 @@ function applyLineLayout(text: ExcalidrawTextElement, layout: LineTextLayout): E
     autoResize: layout.autoResize,
     textAlign: "center",
     verticalAlign: "middle",
+    strokeColor: label.strokeColor,
     containerId: null,
     isDeleted: false,
   });
@@ -478,81 +481,46 @@ function applyBoundLayout(
 
 /** Placeholder dot size: a comfortable fraction of the shape, never below 12px nor above the user's ceiling. */
 function placeholderFontSize(geom: Geometry, maxFontSize: number): number {
-  const wanted = Math.round(Math.min(geom.width, geom.height) * PLACEHOLDER_HEIGHT_RATIO);
-  return clamp(wanted, PLACEHOLDER_MIN_FONT_SIZE, maxFontSize);
+  return clamp(
+    Math.round(Math.min(geom.width, geom.height) * PLACEHOLDER_HEIGHT_RATIO),
+    PLACEHOLDER_MIN_FONT_SIZE,
+    maxFontSize,
+  );
 }
 
-function buildAreaPlaceholder(
-  type: AreaType,
-  geom: Geometry,
-  props: ShapeProps,
-  label: LabelProps,
-  shape: StrokeShape,
-  minFontSize: number,
-  maxFontSize: number,
+/** Text along a line is never bound to it — a bound label on a linear element is laid out as an arrow label. */
+function linePlaceholder(
+  lineEl: ExcalidrawElement, shape: StrokeShape, label: LabelProps, minFontSize: number, lineMaxFontSize: number,
 ): PlaceholderResult {
-  const wanted = placeholderFontSize(geom, maxFontSize);
-  // Search down from the wanted size so a shallow box gets a smaller dot rather than being grown.
-  const pair =
-    fitBoundText(type, geom, props, label, PLACEHOLDER_FRAMES[0], minFontSize, Math.max(minFontSize, wanted)) ??
-    probeBoundPair(type, geom, props, label, PLACEHOLDER_FRAMES[0], minFontSize);
-  if (!pair) {
-    return { elements: [], target: { containerId: "", textId: "", shape } };
-  }
-  return {
-    elements: [pair.container, pair.text],
-    target: { containerId: pair.container.id, textId: pair.text.id, shape },
-  };
-}
-
-function buildLinePlaceholder(
-  lineEl: ExcalidrawElement,
-  shape: StrokeShape,
-  fontFamily: FontFamilyValues,
-  strokeColor: string,
-  opacity: number,
-  minFontSize: number,
-  lineMaxFontSize: number,
-): PlaceholderResult {
-  const g = lineGeometry(lineEl, shape);
   const fontSize = clamp(Math.min(lineMaxFontSize, LINE_PLACEHOLDER_FONT_SIZE), minFontSize, FONT_SIZE_CEILING);
-  const layout = layoutLineText(g, PLACEHOLDER_FRAMES[0], fontFamily, fontSize, fontSize);
-  const textEl = newLineText(layout, fontFamily, strokeColor, opacity);
-  if (!textEl) {
-    return { elements: [lineEl], target: { containerId: lineEl.id, textId: "", shape } };
-  }
-  return {
-    elements: [lineEl, textEl],
-    target: { containerId: lineEl.id, textId: textEl.id, shape },
-  };
+  const g = lineGeometry(lineEl, shape);
+  const layout = layoutLineText(g, PLACEHOLDER_FRAMES[0], label.fontFamily, fontSize, fontSize);
+  const textEl = applyLineLayout(null, layout, label);
+  return { elements: [lineEl, textEl], target: { containerId: lineEl.id, textId: textEl.id, shape } };
 }
 
-function newLineElement(shape: StrokeShape, props: ShapeProps): ExcalidrawElement | null {
+function newLineElement(shape: StrokeShape, props: ShapeProps): ExcalidrawElement {
   const g = shape.kind === "line" ? shape : null;
   const start = { x: num(g?.start?.x), y: num(g?.start?.y) };
   const end = { x: num(g?.end?.x, start.x + 1), y: num(g?.end?.y, start.y) };
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  try {
-    const built = convertToExcalidrawElements([
-      {
-        type: "line",
-        x: start.x,
-        y: start.y,
-        width: Math.abs(dx),
-        height: Math.abs(dy),
-        points: [
-          [0, 0],
-          [dx, dy],
-        ],
-        ...props,
-      } as unknown as ExcalidrawElementSkeleton,
-    ]);
-    return built.find(isLinearElement) ?? null;
-  } catch (err) {
-    console.warn("fit: could not build line", err);
-    return null;
+  const built = convertToExcalidrawElements([
+    {
+      type: "line",
+      x: start.x,
+      y: start.y,
+      width: Math.abs(dx),
+      height: Math.abs(dy),
+      points: [[0, 0], [dx, dy]],
+      ...props,
+    } as unknown as ExcalidrawElementSkeleton,
+  ]);
+  const lineEl = built.find(isLinearElement);
+  if (!lineEl) {
+    throw new Error("the library produced no line element");
   }
+  return lineEl;
 }
 
 /** Derives the StrokeShape a caller-supplied element stands for. Diamonds and anything odd read as a rectangle. */
@@ -566,160 +534,77 @@ function shapeOfElement(el: ExcalidrawElement): StrokeShape {
       length: g.length,
     };
   }
-  const geom = geometryOf(el);
-  return {
-    kind: el.type === "ellipse" ? "ellipse" : "rectangle",
-    x: geom.x,
-    y: geom.y,
-    width: geom.width,
-    height: geom.height,
-  };
+  const { x, y, width, height } = geometryOf(el);
+  return { kind: el.type === "ellipse" ? "ellipse" : "rectangle", x, y, width, height };
+}
+
+function labelOf(src: StyleSnapshot | ExcalidrawElement, fontFamily: FontFamilyValues): LabelProps {
+  return { fontFamily, strokeColor: src.strokeColor, opacity: clamp(num(src.opacity, 100), 0, 100) };
 }
 
 function buildPlaceholder(shape: StrokeShape, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult {
-  const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
-  if (shape?.kind === "line") {
-    const lineEl = newLineElement(shape, propsFromStyle(style, "line", "dashed"));
-    if (!lineEl) {
-      return { elements: [], target: { containerId: "", textId: "", shape } };
+  return guarded("buildPlaceholder", { elements: [], target: { containerId: "", textId: "", shape } }, () => {
+    const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
+    const label = labelOf(style, style.fontFamily);
+    if (shape?.kind === "line") {
+      const lineEl = newLineElement(shape, shapeProps(style, "line", "dashed"));
+      return linePlaceholder(lineEl, shape, label, minFontSize, lineMaxFontSize);
     }
-    return buildLinePlaceholder(
-      lineEl,
-      shape,
-      style.fontFamily,
-      style.strokeColor,
-      clamp(num(style.opacity, 100), 0, 100),
-      minFontSize,
-      lineMaxFontSize,
-    );
-  }
-  const type: AreaType = shape?.kind === "ellipse" ? "ellipse" : "rectangle";
-  const geom = geometryOfShape(shape);
-  return buildAreaPlaceholder(
-    type,
-    geom,
-    propsFromStyle(style, type, "dashed"),
-    { fontFamily: style.fontFamily, strokeColor: style.strokeColor, opacity: clamp(num(style.opacity, 100), 0, 100) },
-    shape,
-    minFontSize,
-    maxFontSize,
-  );
+    const type: AreaType = shape?.kind === "ellipse" ? "ellipse" : "rectangle";
+    const geom = geometryOfShape(shape);
+    const probe: Probe = { type, geom, props: shapeProps(style, type, "dashed"), label };
+    // Search down from the wanted size so a shallow box gets a smaller dot rather than being grown.
+    const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
+    const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
+    return {
+      elements: [pair.container, pair.text],
+      target: { containerId: pair.container.id, textId: pair.text.id, shape },
+    };
+  });
 }
 
-function buildPlaceholderFor(
-  container: ExcalidrawElement,
-  style: StyleSnapshot,
-  opts?: FitOptions,
-): PlaceholderResult {
-  const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
+function buildPlaceholderFor(container: ExcalidrawElement, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult {
   const shape = shapeOfElement(container);
   const dashed = newElementWith(container, { strokeStyle: "dashed" as StrokeStyle });
-
-  if (isLinearElement(container)) {
-    // Text along a line is never bound to it — a bound label on a linear element is laid out as an arrow label.
-    return buildLinePlaceholder(
-      dashed,
-      shape,
-      style.fontFamily,
-      container.strokeColor,
-      clamp(num(container.opacity, 100), 0, 100),
-      minFontSize,
-      lineMaxFontSize,
-    );
-  }
-
-  const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
-  const geom = geometryOf(container);
-  const label: LabelProps = {
-    fontFamily: style.fontFamily,
-    strokeColor: container.strokeColor,
-    opacity: clamp(num(container.opacity, 100), 0, 100),
-  };
-  const wanted = placeholderFontSize(geom, maxFontSize);
-  const pair = fitBoundText(
-    type,
-    geom,
-    propsFromElement(container, "dashed"),
-    label,
-    PLACEHOLDER_FRAMES[0],
-    minFontSize,
-    Math.max(minFontSize, wanted),
-  );
-  if (!pair) {
-    return { elements: [dashed], target: { containerId: container.id, textId: "", shape } };
-  }
-  const text = newElementWith(pair.text, { containerId: container.id });
-  const updated = newElementWith(container, {
-    strokeStyle: "dashed" as StrokeStyle,
-    width: pair.container.width,
-    height: pair.container.height,
-    boundElements: withTextBinding(container.boundElements, text.id),
+  const fallback = { elements: [dashed], target: { containerId: container.id, textId: "", shape } };
+  return guarded("buildPlaceholderFor", fallback, () => {
+    const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
+    const label = labelOf(container, style.fontFamily);
+    if (isLinearElement(container)) {
+      return linePlaceholder(dashed, shape, label, minFontSize, lineMaxFontSize);
+    }
+    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
+    const geom = geometryOf(container);
+    const probe: Probe = { type, geom, props: shapeProps(container, type, "dashed"), label };
+    const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
+    const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
+    const text = newElementWith(pair.text, { containerId: container.id });
+    const updated = newElementWith(container, {
+      strokeStyle: "dashed" as StrokeStyle,
+      width: pair.container.width,
+      height: pair.container.height,
+      boundElements: withTextBinding(container.boundElements, text.id),
+    });
+    return { elements: [updated, text], target: { containerId: container.id, textId: text.id, shape } };
   });
-  return { elements: [updated, text], target: { containerId: container.id, textId: text.id, shape } };
 }
 
 function setPlaceholderFrame(text: ExcalidrawTextElement, frame: number): ExcalidrawTextElement {
-  const index = ((Math.trunc(num(frame)) % PLACEHOLDER_FRAMES.length) + PLACEHOLDER_FRAMES.length) %
-    PLACEHOLDER_FRAMES.length;
-  const content = PLACEHOLDER_FRAMES[index];
-  const metrics = measureOnly(content, text.fontSize, text.fontFamily);
-  // The dots grow rightwards; nudge x so a centred placeholder keeps its centre instead of drifting.
-  const dx = text.textAlign === "center" ? (text.width - metrics.width) / 2 : 0;
-  return newElementWith(text, {
-    text: content,
-    originalText: content,
-    width: metrics.width,
-    height: metrics.height,
-    x: text.x + dx,
+  return guarded("setPlaceholderFrame", text, () => {
+    const index = ((Math.trunc(num(frame)) % PLACEHOLDER_FRAMES.length) + PLACEHOLDER_FRAMES.length) %
+      PLACEHOLDER_FRAMES.length;
+    const content = PLACEHOLDER_FRAMES[index];
+    const metrics = measureOnly(content, text.fontSize, text.fontFamily);
+    // The dots grow rightwards; nudge x so a centred placeholder keeps its centre instead of drifting.
+    const dx = text.textAlign === "center" ? (text.width - metrics.width) / 2 : 0;
+    return newElementWith(text, {
+      text: content,
+      originalText: content,
+      width: metrics.width,
+      height: metrics.height,
+      x: text.x + dx,
+    });
   });
-}
-
-function commitToContainer(
-  target: VoiceTarget,
-  container: ExcalidrawElement,
-  text: ExcalidrawTextElement,
-  content: string,
-  strokeStyle: StrokeStyle,
-  fontFamily: FontFamilyValues,
-  minFontSize: number,
-  maxFontSize: number,
-): ExcalidrawElement[] {
-  const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
-  const geom = geometryOf(container);
-  const label: LabelProps = {
-    fontFamily,
-    strokeColor: container.strokeColor,
-    opacity: clamp(num(container.opacity, 100), 0, 100),
-  };
-  const pair = fitBoundText(type, geom, propsFromElement(container, strokeStyle), label, content, minFontSize, maxFontSize);
-  const restored = newElementWith(container, {
-    strokeStyle,
-    width: pair ? pair.container.width : container.width,
-    height: pair ? pair.container.height : container.height,
-    boundElements: withTextBinding(container.boundElements, target.textId || text.id),
-  });
-  if (!pair) {
-    return [restored, newElementWith(text, { text: content, originalText: content, isDeleted: false })];
-  }
-  return [restored, applyBoundLayout(text, pair.text, container.id, content)];
-}
-
-function commitToLine(
-  container: ExcalidrawElement,
-  text: ExcalidrawTextElement,
-  content: string,
-  shape: StrokeShape,
-  strokeStyle: StrokeStyle,
-  fontFamily: FontFamilyValues,
-  minFontSize: number,
-  lineMaxFontSize: number,
-): ExcalidrawElement[] {
-  const g = lineGeometry(container, shape);
-  const layout = layoutLineText(g, content, fontFamily, minFontSize, Math.max(minFontSize, lineMaxFontSize));
-  return [
-    newElementWith(container, { strokeStyle }),
-    newElementWith(applyLineLayout(text, layout), { strokeColor: container.strokeColor }),
-  ];
 }
 
 function commitText(
@@ -730,117 +615,93 @@ function commitText(
   style: StyleSnapshot,
   opts?: FitOptions,
 ): ExcalidrawElement[] {
-  const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
-  const content = String(transcript ?? "").trim();
-  if (!content) {
-    // The controller is meant to call discard() for this; doing it here keeps an empty result harmless.
-    return discard(target, container, text, style);
-  }
-  if (isLinearElement(container)) {
-    return commitToLine(
-      container,
-      text,
-      content,
-      target?.shape ?? shapeOfElement(container),
-      style.strokeStyle,
-      style.fontFamily,
-      minFontSize,
-      lineMaxFontSize,
-    );
-  }
-  return commitToContainer(
-    target,
-    container,
-    text,
-    content,
-    style.strokeStyle,
-    style.fontFamily,
-    minFontSize,
-    maxFontSize,
-  );
+  return guarded("commitText", [container, text], () => {
+    const { maxFontSize, minFontSize, lineMaxFontSize, lineMinFontSize } = resolveOptions(opts);
+    const content = String(transcript ?? "").trim();
+    if (!content) {
+      // The controller is meant to call discard() for this; doing it here keeps an empty result harmless.
+      return discard(target, container, text, style);
+    }
+    const label = labelOf(container, style.fontFamily);
+    if (isLinearElement(container)) {
+      const g = lineGeometry(container, target?.shape ?? shapeOfElement(container));
+      const layout = layoutLineText(g, content, style.fontFamily, lineMinFontSize, lineMaxFontSize);
+      return [
+        newElementWith(container, { strokeStyle: style.strokeStyle }),
+        applyLineLayout(text, layout, label),
+      ];
+    }
+    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
+    const geom = geometryOf(container);
+    const probe: Probe = { type, geom, props: shapeProps(container, type, style.strokeStyle), label };
+    const pair = fitBoundText(probe, content, minFontSize, maxFontSize);
+    const restored = newElementWith(container, {
+      strokeStyle: style.strokeStyle,
+      width: pair.container.width,
+      height: pair.container.height,
+      boundElements: withTextBinding(container.boundElements, target.textId || text.id),
+    });
+    return [restored, applyBoundLayout(text, pair.text, container.id, content)];
+  });
 }
 
 function markFailed(
-  target: VoiceTarget,
-  container: ExcalidrawElement,
-  text: ExcalidrawTextElement,
-  style: StyleSnapshot,
+  target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot,
 ): ExcalidrawElement[] {
-  if (isLinearElement(container)) {
-    const g = lineGeometry(container, target?.shape);
-    const layout = layoutLineText(g, FAILED_TEXT, style.fontFamily, FAILED_FONT_SIZE, FAILED_FONT_SIZE);
-    return [
-      newElementWith(container, { strokeStyle: style.strokeStyle }),
-      newElementWith(applyLineLayout(text, layout), { strokeColor: FAILED_COLOR }),
-    ];
-  }
-  const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
-  const geom = geometryOf(container);
-  const pair = probeBoundPair(
-    type,
-    geom,
-    propsFromElement(container, style.strokeStyle),
-    { fontFamily: style.fontFamily, strokeColor: FAILED_COLOR, opacity: clamp(num(container.opacity, 100), 0, 100) },
-    FAILED_TEXT,
-    FAILED_FONT_SIZE,
-  );
-  const restored = newElementWith(container, {
-    strokeStyle: style.strokeStyle,
-    width: pair ? pair.container.width : container.width,
-    height: pair ? pair.container.height : container.height,
-    boundElements: withTextBinding(container.boundElements, target?.textId || text.id),
+  return guarded("markFailed", [container, text], () => {
+    if (isLinearElement(container)) {
+      const g = lineGeometry(container, target?.shape);
+      const layout = layoutLineText(g, FAILED_TEXT, style.fontFamily, FAILED_FONT_SIZE, FAILED_FONT_SIZE);
+      return [
+        newElementWith(container, { strokeStyle: style.strokeStyle }),
+        applyLineLayout(text, layout, { ...labelOf(container, style.fontFamily), strokeColor: FAILED_COLOR }),
+      ];
+    }
+    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
+    const original = originalGeometry(target, container);
+    // The marker is laid out in the shape the founder drew, not in whatever the placeholder grew it to.
+    const geom = { ...geometryOf(container), ...original };
+    const label = { ...labelOf(container, style.fontFamily), strokeColor: FAILED_COLOR };
+    const probe: Probe = { type, geom, props: shapeProps(container, type, style.strokeStyle), label };
+    const pair = probeBoundPair(probe, FAILED_TEXT, FAILED_FONT_SIZE);
+    const restored = newElementWith(container, {
+      ...original,
+      strokeStyle: style.strokeStyle,
+      boundElements: withTextBinding(container.boundElements, target?.textId || text.id),
+    });
+    return [restored, applyBoundLayout(text, pair.text, container.id, FAILED_TEXT)];
   });
-  if (!pair) {
-    return [restored, newElementWith(text, { text: FAILED_TEXT, originalText: FAILED_TEXT, strokeColor: FAILED_COLOR })];
-  }
-  return [restored, applyBoundLayout(text, pair.text, container.id, FAILED_TEXT)];
 }
 
 function discard(
-  target: VoiceTarget,
-  container: ExcalidrawElement,
-  text: ExcalidrawTextElement,
-  style: StyleSnapshot,
+  target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot,
 ): ExcalidrawElement[] {
-  const textId = target?.textId || text.id;
   return [
     newElementWith(container, {
+      ...originalGeometry(target, container),
       strokeStyle: style.strokeStyle,
-      boundElements: withoutTextBinding(container.boundElements, textId),
+      boundElements: withoutTextBinding(container.boundElements, target?.textId || text.id),
     }),
     newElementWith(text, { isDeleted: true }),
   ];
 }
 
-function buildFreeText(
-  at: Point,
-  transcript: string,
-  style: StyleSnapshot,
-  fontSize: number,
-): ExcalidrawTextElement {
-  const size = clamp(Math.round(num(fontSize, 20)), 1, FONT_SIZE_CEILING);
-  const content = String(transcript ?? "");
-  const built = convertToExcalidrawElements([
-    {
-      type: "text",
-      x: num(at?.x),
-      y: num(at?.y),
-      text: content,
-      fontSize: size,
-      fontFamily: style.fontFamily,
-      strokeColor: style.strokeColor,
-      opacity: clamp(num(style.opacity, 100), 0, 100),
-    },
-  ]);
-  const textEl = built.find(isTextElement);
-  if (!textEl) {
-    // convertToExcalidrawElements always yields the text element; this only guards a future library change.
-    console.warn("fit: buildFreeText produced no text element");
-  }
-  return textEl as ExcalidrawTextElement;
+function buildFreeText(at: Point, transcript: string, style: StyleSnapshot, fontSize: number): ExcalidrawTextElement {
+  // The one entry point with no caller geometry to hand back, so a library failure throws rather than returning
+  // undefined cast as an element; it cannot happen in a browser.
+  return newText({
+    text: String(transcript ?? ""),
+    fontSize,
+    label: labelOf(style, style.fontFamily),
+    x: num(at?.x),
+    y: num(at?.y),
+  });
 }
 
-export const fit: FitModule & { measureOnly: typeof measureOnly } = {
+export const fit: FitModule & {
+  measureOnly: typeof measureOnly;
+  restoreShape: typeof restoreShape;
+} = {
   buildPlaceholder,
   buildPlaceholderFor,
   setPlaceholderFrame,
@@ -849,7 +710,8 @@ export const fit: FitModule & { measureOnly: typeof measureOnly } = {
   discard,
   buildFreeText,
   measureOnly,
+  restoreShape,
 };
 
-export { measureOnly };
+export { measureOnly, restoreShape };
 export default fit;

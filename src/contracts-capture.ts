@@ -89,8 +89,19 @@ export const HALLUCINATION_BLOCKLIST = [
   "감사합니다", "시청해주셔서 감사합니다", "구독과 좋아요", "자막 제공", "뉴스", "MBC 뉴스", "KBS 뉴스",
   "thank you", "thanks for watching", "thank you for watching", "you", "bye", "subtitles by", "amara.org",
 ];
+/**
+ * Only multi-word entries get the fuzzy substring match. A short entry ("you", "bye", "뉴스") is a substring of
+ * ordinary words — "young", "payout", "뉴스룸" — and the controller drops a filtered transcript with no ⚠ and no
+ * retry, so a loose match here deletes real speech invisibly. Short entries must therefore match exactly.
+ */
+const SUBSTRING_MIN_LENGTH = 8;
+
 export function isHallucination(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/[.!?,、。…\s]+$/g, "").replace(/^[\s.!?,]+/, "");
   if (!t) return true;
-  return HALLUCINATION_BLOCKLIST.some(b => t === b.toLowerCase() || (t.length <= b.length + 3 && t.includes(b.toLowerCase())));
+  return HALLUCINATION_BLOCKLIST.some(entry => {
+    const b = entry.toLowerCase();
+    if (t === b) return true;
+    return b.length >= SUBSTRING_MIN_LENGTH && t.length <= b.length + 3 && t.includes(b);
+  });
 }
