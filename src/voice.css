@@ -66,6 +66,9 @@ body,
 .voice-tool--recording .voice-tool__dot {
   opacity: 1;
   animation: voice-pulse 1s ease-in-out infinite;
+  /* --voice-level is this surface's display gain over the RAW RMS the capture emits (toolbar.tsx, src/level.ts):
+     the dot swells with the room so the founder can see the mic is hearing them without opening settings. */
+  box-shadow: 0 0 0 calc(3px * var(--voice-level, 0)) rgba(224, 49, 49, 0.35);
 }
 
 @keyframes voice-pulse {

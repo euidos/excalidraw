@@ -9,6 +9,9 @@ const out = process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[
 const doStroke = process.argv.includes("--stroke");
 const browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
 const page = browser.contexts().flatMap(c => c.pages()).find(p => p.url().includes("127.0.0.1:8765"));
+const consoleLog = [];
+page.on("console", m => { if (m.type() === "error" || m.type() === "warning") consoleLog.push(m.type() + ": " + m.text().slice(0, 200)); });
+page.on("pageerror", e => consoleLog.push("pageerror: " + String(e).slice(0, 200)));
 if (!page) { console.log("no kiosk page; pages:", browser.contexts().flatMap(c => c.pages()).map(p => p.url())); process.exit(2); }
 const info = await page.evaluate(async () => {
   const v = window.__excalidrawVoice;
@@ -16,7 +19,7 @@ const info = await page.evaluate(async () => {
   let health = null;
   try { const s = v ? v.settings() : null; const r = await fetch((s ? s.sttUrl : "http://100.81.33.83:8770") + "/health"); health = await r.json(); } catch (e) { health = String(e); }
   return {
-    url: location.href, voice: !!v, status: v ? v.status() : null, settings: v ? v.settings() : null, devices, health,
+    url: location.href, voice: !!v, status: v ? v.status() : null, capture: v && v.capture ? { mic: v.capture.mic, active: v.capture.active } : null, settings: v ? v.settings() : null, devices, health,
     toolbarVoice: !!document.querySelector('[data-testid="toolbar-voice"]'),
     elements: v ? v.api.getSceneElements().length : null, fonts: document.fonts.check("20px Excalifont"),
   };
@@ -35,9 +38,10 @@ if (doStroke && info.voice) {
   const t0 = Date.now();
   let st;
   while (Date.now() - t0 < 30000) { st = await page.evaluate(() => window.__excalidrawVoice.status()); if (st.pending === 0) break; await page.waitForTimeout(300); }
-  const els = await page.evaluate(() => window.__excalidrawVoice.api.getSceneElements().slice(-2).map(e => ({ type: e.type, text: e.text, containerId: e.containerId, strokeStyle: e.strokeStyle })));
+  const els = await page.evaluate(() => window.__excalidrawVoice.api.getSceneElements().slice(-2).map(e => ({ type: e.type, text: e.text, containerId: e.containerId, strokeStyle: e.strokeStyle, width: Math.round(e.width), height: Math.round(e.height) })));
   console.log("after stroke:", JSON.stringify({ status: st, last: els }, null, 1));
 }
+if (consoleLog.length) console.log("console:", JSON.stringify(consoleLog, null, 1));
 await page.screenshot({ path: out });
 console.log("screenshot", out);
 await browser.close();

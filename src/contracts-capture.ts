@@ -49,8 +49,22 @@ export interface VoiceCapture {
   now(): number;
   readonly mic: MicState;
   readonly active: boolean;
+  /**
+   * The VAD's measured room tone, RAW RMS on the same scale as `onLevel` (0 until the first ~200 ms are seeded).
+   * Exposed because the effective VAD threshold is max(setting, 3 x floor): a settings panel that draws only the
+   * setting draws a line the VAD is not using.
+   */
+  readonly noiseFloor: number;
   onUtteranceStart?: (u: UtteranceEvent) => void;
   onUtteranceEnd?: (u: Required<UtteranceEvent>) => void;
+  /**
+   * Room loudness for the meter, ~10x/s while a take is running.
+   *
+   * UNIT AND SCALE (RETRO L6 / gate N12): RAW RMS in 0..1, exactly the number the VAD thresholds against — a quiet
+   * room reads ~0.003..0.006, speech ~0.02..0.2. No display gain is applied here, because the only consumer that
+   * can choose one is the surface that draws it: `src/level.ts` owns that mapping so the meter bar and the VAD
+   * threshold marker cannot end up on two different axes again.
+   */
   onLevel?: (rms: number) => void;
   /** Fires on every mic state change: prepare() outcome, track ended/muted mid-take, device fallback. */
   onMicChange?: (mic: MicState, detail?: string) => void;
@@ -86,8 +100,10 @@ export type AssignUtterance = (u: Utterance, strokes: readonly StrokeRecord[], n
 
 /** Transcripts that whisper produces from near-silence; matched after trimming/punctuation stripping, case-insensitive. */
 export const HALLUCINATION_BLOCKLIST = [
-  "감사합니다", "시청해주셔서 감사합니다", "구독과 좋아요", "자막 제공", "뉴스", "MBC 뉴스", "KBS 뉴스",
+  "감사합니다", "시청해주셔서 감사합니다", "시청해 주셔서 감사합니다", "구독과 좋아요", "자막 제공", "자막 by",
+  "뉴스", "MBC 뉴스", "KBS 뉴스",
   "thank you", "thanks for watching", "thank you for watching", "you", "bye", "subtitles by", "amara.org",
+  "subtitles by amara.org", "subtitles by the amara.org community",
 ];
 /**
  * Only multi-word entries get the fuzzy substring match. A short entry ("you", "bye", "뉴스") is a substring of
@@ -96,12 +112,18 @@ export const HALLUCINATION_BLOCKLIST = [
  */
 const SUBSTRING_MIN_LENGTH = 8;
 
+/** Spacing is not a word boundary in Korean and whisper punts on it ("시청해주셔서" vs "시청해 주셔서"). */
+const despace = (s: string): string => s.replace(/\s+/g, "");
+
 export function isHallucination(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/[.!?,、。…\s]+$/g, "").replace(/^[\s.!?,]+/, "");
   if (!t) return true;
+  const squashed = despace(t);
   return HALLUCINATION_BLOCKLIST.some(entry => {
     const b = entry.toLowerCase();
     if (t === b) return true;
+    // Whole-text equality ignoring spaces: an exact match, so it is safe for the short entries too.
+    if (squashed === despace(b)) return true;
     return b.length >= SUBSTRING_MIN_LENGTH && t.length <= b.length + 3 && t.includes(b);
   });
 }

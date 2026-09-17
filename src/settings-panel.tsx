@@ -1,6 +1,7 @@
 /** Compact settings panel for the voice tool. Plain React; look comes from voice.css + Excalidraw CSS vars. */
 import { useEffect, useState } from "react";
 import type { CheckHealth, VoiceSettings } from "./contracts";
+import { meterScale } from "./level";
 
 export interface SettingsPanelProps {
   open: boolean;
@@ -8,16 +9,15 @@ export interface SettingsPanelProps {
   settings: VoiceSettings;
   onChange: (settings: VoiceSettings) => void;
   checkHealth: CheckHealth;
-  /** Live mic RMS 0..1 from the capture module, so the VAD threshold can be set against real room noise. */
+  /** Live mic level from the capture module: RAW RMS 0..1, the same unit the VAD thresholds against. */
   level: number;
+  /** The VAD's measured room tone (RAW RMS), so the marker can be drawn where the VAD actually decides. */
+  noiseFloor?: number;
 }
 
 type MicOption = { deviceId: string; label: string };
 type TestState = { kind: "idle" } | { kind: "testing" } | { kind: "done"; text: string; ok: boolean };
 
-/** Full-scale of the level meter; the VAD range (0.003..0.05) has to be readable inside it. */
-const VAD_MAX = 0.06;
-const pct = (v: number) => Math.max(0, Math.min(100, (v / VAD_MAX) * 100));
 const clamp = (v: number, lo: number, hi: number, fallback: number) =>
   Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
 
@@ -29,7 +29,15 @@ const LANGUAGES: Array<[string, string]> = [
   ["zh", "中文 (zh)"],
 ];
 
-export function SettingsPanel({ open, onClose, settings, onChange, checkHealth, level }: SettingsPanelProps) {
+export function SettingsPanel({
+  open,
+  onClose,
+  settings,
+  onChange,
+  checkHealth,
+  level,
+  noiseFloor = 0,
+}: SettingsPanelProps) {
   const [mics, setMics] = useState<MicOption[]>([]);
   const [test, setTest] = useState<TestState>({ kind: "idle" });
 
@@ -63,6 +71,7 @@ export function SettingsPanel({ open, onClose, settings, onChange, checkHealth, 
   }
 
   const patch = (p: Partial<VoiceSettings>) => onChange({ ...settings, ...p });
+  const meter = meterScale(level, settings.vadThreshold, noiseFloor);
 
   const runTest = async () => {
     setTest({ kind: "testing" });
@@ -190,10 +199,16 @@ export function SettingsPanel({ open, onClose, settings, onChange, checkHealth, 
       </label>
       <div className="voice-settings__row">
         <span>Level</span>
-        <div className="voice-meter" role="presentation">
-          {/* Both the bar and the threshold marker use the same 0..VAD_MAX scale, so "is my room above the line" is readable at a glance. */}
-          <div className="voice-meter__fill" style={{ width: `${pct(level)}%` }} />
-          <div className="voice-meter__mark" style={{ left: `${pct(settings.vadThreshold)}%` }} />
+        <div className="voice-meter" role="presentation" data-testid="voice-meter">
+          {/* One mapping, one unit (gate N12): src/level.ts turns the RAW RMS the capture emits into both numbers,
+              and the marker sits at the threshold the VAD really uses — max(setting, 3 x room floor). */}
+          <div className="voice-meter__fill" style={{ width: `${meter.bar}%` }} data-level={meter.bar.toFixed(1)} />
+          <div
+            className="voice-meter__mark"
+            style={{ left: `${meter.mark}%` }}
+            data-threshold={meter.threshold.toFixed(4)}
+            title={`VAD opens above ${meter.threshold.toFixed(3)} RMS`}
+          />
         </div>
       </div>
 

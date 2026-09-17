@@ -9,6 +9,7 @@
  * gesture on this button is wired to it.
  */
 import type { MountVoiceToolbarButton, ToolbarHandle, ToolbarOptions, VoiceStatus } from "./contracts";
+import { meterPercent } from "./level";
 
 /** A press that travels further than this (CSS px) is a drag/palm smear, not a tap. */
 const TAP_SLOP_PX = 24;
@@ -172,8 +173,18 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       if (badge.textContent !== label) {
         badge.textContent = label;
       }
-      // The wall panel has no console; the tooltip is where a failure can be read back.
-      const title = status.lastError ? `${BASE_TITLE}\n⚠ ${status.lastError}` : BASE_TITLE;
+      // status.level is RAW RMS (gate N12); the display gain is this surface's own, through the shared mapping.
+      const level = (meterPercent(status.level) / 100).toFixed(2);
+      if (button.style.getPropertyValue("--voice-level") !== level) {
+        button.style.setProperty("--voice-level", level);
+      }
+      // The wall panel has no console; the tooltip is where a failure — and a silently filtered transcript — can
+      // be read back. `dropped` had no rendered sink at all before round 3 (RETRO L2 / gate N10).
+      const dropped =
+        status.dropped > 0
+          ? `\ndropped ${status.dropped}${status.lastDropped ? `: “${status.lastDropped}”` : ""}`
+          : "";
+      const title = `${BASE_TITLE}${status.lastError ? `\n⚠ ${status.lastError}` : ""}${dropped}`;
       if (button.title !== title) {
         button.title = title;
       }

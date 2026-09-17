@@ -21,6 +21,8 @@ export type VadEvent =
   | { type: "end"; id: number; startSample: number; endSample: number };
 
 export interface Vad {
+  /** The measured room tone (RAW RMS, same scale as the frames pushed in); 0 until the seed frames are in. */
+  readonly noiseFloor: number;
   /** @param frameIndex frame number since capture started; frames are contiguous while the VAD is running. */
   pushFrame(rms: number, frameIndex: number): VadEvent[];
   /**
@@ -39,8 +41,12 @@ const FRAME_MS = 20;
 const FLOOR_ALPHA = 0.05;
 /** Frames averaged into the initial floor before any detection runs (200 ms of room tone). */
 const SEED_FRAMES = 10;
-/** Speech has to beat the room by this factor, so a noisy whiteboard raises the bar instead of self-triggering. */
-const FLOOR_MULTIPLIER = 3;
+/**
+ * Speech has to beat the room by this factor, so a noisy whiteboard raises the bar instead of self-triggering.
+ * Exported because the effective threshold (max(setting, FLOOR_MULTIPLIER x floor)) is what the settings panel has
+ * to draw; a second copy of the number in the UI is how the marker drifts off the VAD's real decision line.
+ */
+export const FLOOR_MULTIPLIER = 3;
 
 const DEFAULTS = {
   threshold: 0.012,
@@ -105,6 +111,10 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
   }
 
   return {
+    get noiseFloor(): number {
+      return noiseFloor;
+    },
+
     pushFrame(rms: number, frameIndex: number): VadEvent[] {
       const events: VadEvent[] = [];
 

@@ -60,6 +60,8 @@ export default function App() {
   const [settings, setSettings] = useState<VoiceSettings>(() => loadSettings());
   const [panelOpen, setPanelOpen] = useState(false);
   const [level, setLevel] = useState(0);
+  /** The VAD's room tone, read alongside the level so the panel's threshold marker matches the VAD's real line. */
+  const [noiseFloor, setNoiseFloor] = useState(0);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<ToolbarHandle | null>(null);
   const captureRef = useRef<VoiceCapture | null>(null);
@@ -100,7 +102,9 @@ export default function App() {
     // level off VoiceStatus, and only the open settings panel needs it as React state.
     capture.onLevel = (rms: number) => {
       if (panelOpenRef.current) {
+        // RAW RMS straight through: the display gain belongs to the surface that draws it (src/level.ts).
         setLevel(rms);
+        setNoiseFloor(capture.noiseFloor);
       }
     };
 
@@ -251,6 +255,7 @@ export default function App() {
         onChange={onSettingsChange}
         checkHealth={checkHealth}
         level={level}
+        noiseFloor={noiseFloor}
       />
     </div>
   );

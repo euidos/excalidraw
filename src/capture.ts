@@ -29,8 +29,6 @@ const DEFAULT_BUFFER_SECONDS = 300;
 const CHUNK_SAMPLES = 2048;
 const FRAME_MS = 20;
 const LEVEL_INTERVAL_MS = 100;
-/** RMS of speech sits around 0.05..0.25; ×4 maps that onto a usable 0..1 meter. */
-const LEVEL_GAIN = 4;
 /** Chunks whose measured offset is taken as-is before the EMA takes over (also after a graph rebuild). */
 const OFFSET_WARMUP_CHUNKS = 3;
 const OFFSET_ALPHA = 0.1;
@@ -188,6 +186,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
     get active() {
       return active;
     },
+    get noiseFloor() {
+      return vad.noiseFloor;
+    },
   };
 
   function now(): number {
@@ -293,7 +294,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
     const rms = Math.sqrt(levelSumSq / levelFrames);
     levelSumSq = 0;
     levelFrames = 0;
-    capture.onLevel?.(Math.min(1, Math.max(0, rms * LEVEL_GAIN)));
+    // RAW RMS, no display gain (contract + gate N12): the meter and the VAD threshold marker are drawn by
+    // src/level.ts on this one scale, so "is my room above the line" is the same comparison the VAD makes.
+    capture.onLevel?.(Math.min(1, Math.max(0, rms)));
   }
 
   function handleVadEvents(events: VadEvent[]): void {
