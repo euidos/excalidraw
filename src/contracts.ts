@@ -213,6 +213,8 @@ export type MountVoiceToolbarButton = (excalidrawRoot: HTMLElement, opts: Toolba
 export interface VoiceDebug {
   api: ExcalidrawImperativeAPI;
   controller: VoiceController;
+  fit: FitModule;
+  recognize: RecognizeStroke;
   status(): VoiceStatus;
   settings(): VoiceSettings;
   setSettings(patch: Partial<VoiceSettings>): void;
