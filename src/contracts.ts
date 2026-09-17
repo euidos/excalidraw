@@ -8,6 +8,7 @@ import type {
   FontFamilyValues,
 } from "@excalidraw/excalidraw/element/types";
 import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type { AssignUtterance, VoiceCapture } from "./contracts-capture";
 
 export type Point = { x: number; y: number };
 
@@ -50,6 +51,8 @@ export interface FitOptions {
   minFontSize?: number;
   /** Upper bound for text placed along a line. Default 36. */
   lineMaxFontSize?: number;
+  /** Floor for text placed along a line; below this the text wraps to the line's length and grows upward. Default 14. */
+  lineMinFontSize?: number;
 }
 /** Ids the controller needs to find its elements again later (never hold element objects across frames). */
 export interface VoiceTarget {
@@ -102,6 +105,7 @@ export interface FitModule {
 }
 
 /**
+ * RETIRED in round 2 (replaced by VoiceCapture in contracts-capture.ts; src/audio.ts is deleted at integration).
  * audio.ts — one MediaRecorder per segment on a long-lived MediaStream.
  * prepare() acquires the stream once (getUserMedia) and keeps it so start() is instant; start() begins a segment;
  * cut() ends the current segment and immediately starts the next, resolving with the finished blob; stop() ends the
@@ -148,7 +152,15 @@ export interface VoiceSettings {
   deviceId: string; // "" = default mic
   maxFontSize: number;
   lineMaxFontSize: number;
+  lineMinFontSize: number;
+  /** Utterances shorter than this are dropped (whisper hallucinates on near-silence). */
   minSegmentMs: number;
+  /** Speech may start this long before its stroke's pointer-down and still belong to it. */
+  preRollMs: number;
+  /** Energy VAD floor (RMS 0..1); the effective threshold is max(this, 3 × measured noise floor). */
+  vadThreshold: number;
+  /** Acquire the microphone at page load so the first arm is instant. The e2e turns this off to time fixtures. */
+  warmMicOnBoot: boolean;
 }
 export const DEFAULT_SETTINGS: VoiceSettings = {
   sttUrl: "http://100.81.33.83:8770",
@@ -157,7 +169,11 @@ export const DEFAULT_SETTINGS: VoiceSettings = {
   deviceId: "",
   maxFontSize: 96,
   lineMaxFontSize: 36,
-  minSegmentMs: 300,
+  lineMinFontSize: 14,
+  minSegmentMs: 400,
+  preRollMs: 1500,
+  vadThreshold: 0.012,
+  warmMicOnBoot: true,
 };
 
 /** controller.ts — the state machine. See DESIGN.local.md "Segment cutting" and this JSDoc. */
@@ -173,10 +189,15 @@ export interface VoiceStatus {
   /** Diagnostics for tests: highest number of simultaneously pending segments observed. */
   maxPendingSeen: number;
   completed: number;
+  /** Diagnostics: utterances detected since arm, orphans placed, last transcript committed. */
+  utterances: number;
+  orphans: number;
+  lastTranscript?: string;
 }
 export interface VoiceControllerDeps {
   api: ExcalidrawImperativeAPI;
-  recorder: SegmentRecorder;
+  capture: VoiceCapture;
+  assign: AssignUtterance;
   transcribe: Transcribe;
   fit: FitModule;
   recognize: RecognizeStroke;

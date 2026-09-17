@@ -5,6 +5,8 @@
  */
 import type { MicState } from "./contracts";
 
+export type { MicState };
+
 export interface UtteranceEvent {
   id: number;
   /** capture-clock ms (see VoiceCapture.now) */
@@ -50,6 +52,10 @@ export interface VoiceCapture {
   onUtteranceStart?: (u: UtteranceEvent) => void;
   onUtteranceEnd?: (u: Required<UtteranceEvent>) => void;
   onLevel?: (rms: number) => void;
+  /** Fires on every mic state change: prepare() outcome, track ended/muted mid-take, device fallback. */
+  onMicChange?: (mic: MicState, detail?: string) => void;
+  /** Change VAD parameters at runtime (settings panel). */
+  setVad(opts: VadOptions): void;
   dispose(): void;
 }
 export type CreateVoiceCapture = (opts?: CaptureOptions) => VoiceCapture;
