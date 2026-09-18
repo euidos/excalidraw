@@ -368,6 +368,76 @@ export async function waitForUtterance(page: Page, nth: number, timeoutMs = 20_0
   }
 }
 
+// --- the mic glyph ------------------------------------------------------
+
+/** What the toolbar button is currently showing (round 4b: the glyph itself is the level meter). */
+export interface MicGlyph {
+  armed: boolean;
+  /** The VAD has an open utterance: the accent colour. */
+  speaking: boolean;
+  /** `--voice-level`, 0..1 — how full the mic capsule is drawn. */
+  level: number;
+}
+
+const GLYPH_SELECTOR = '[data-testid="toolbar-voice"]';
+
+export const micGlyph = (page: Page): Promise<MicGlyph> =>
+  page.evaluate((selector: string) => {
+    const el = document.querySelector(selector) as HTMLElement | null;
+    if (!el) {
+      throw new Error("voice button not in the DOM");
+    }
+    const raw = Number.parseFloat(el.style.getPropertyValue("--voice-level"));
+    return {
+      armed: el.classList.contains("voice-tool--armed"),
+      speaking: el.classList.contains("voice-tool--speaking"),
+      level: Number.isFinite(raw) ? raw : 0,
+    };
+  }, GLYPH_SELECTOR);
+
+interface GlyphWatch {
+  peakLevel: number;
+  sawSpeaking: boolean;
+  samples: number;
+}
+
+/**
+ * Samples the glyph every 30 ms from inside the page.
+ *
+ * Polling from the test runner cannot see this: an utterance in a 2 s fixture is open for ~2 s and the capsule only
+ * fills while the speech is actually loud, so a round trip per sample would miss the peak and the accent both.
+ */
+export async function watchMicGlyph(page: Page): Promise<void> {
+  await page.evaluate((selector: string) => {
+    const el = document.querySelector(selector) as HTMLElement | null;
+    if (!el) {
+      throw new Error("voice button not in the DOM");
+    }
+    const watch: GlyphWatch = { peakLevel: 0, sawSpeaking: false, samples: 0 };
+    const w = window as unknown as { __glyphWatch: GlyphWatch; __glyphWatchStop?: () => void };
+    w.__glyphWatch = watch;
+    const timer = setInterval(() => {
+      watch.samples += 1;
+      const raw = Number.parseFloat(el.style.getPropertyValue("--voice-level"));
+      if (Number.isFinite(raw)) {
+        watch.peakLevel = Math.max(watch.peakLevel, raw);
+      }
+      if (el.classList.contains("voice-tool--speaking")) {
+        watch.sawSpeaking = true;
+      }
+    }, 30);
+    w.__glyphWatchStop = () => clearInterval(timer);
+  }, GLYPH_SELECTOR);
+}
+
+/** Highest level and whether the accent ever appeared since watchMicGlyph(); stops the sampler. */
+export const readMicGlyphWatch = (page: Page): Promise<GlyphWatch> =>
+  page.evaluate(() => {
+    const w = window as unknown as { __glyphWatch?: GlyphWatch; __glyphWatchStop?: () => void };
+    w.__glyphWatchStop?.();
+    return w.__glyphWatch ?? { peakLevel: 0, sawSpeaking: false, samples: 0 };
+  });
+
 export async function evidence(page: Page, name: string): Promise<string> {
   mkdirSync(EVIDENCE, { recursive: true });
   const path = resolve(EVIDENCE, `${name}.png`);

@@ -28,19 +28,19 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 | `src/stroke.ts` | `RecognizeStroke` | Pure geometry: points → line / rectangle / ellipse / null. No DOM, unit-tested. Thresholds are the `RecognizeOptions` JSDoc defaults in `contracts.ts` plus `MIN_CHORD_PATH_RATIO` here — the source of truth the README only copies. |
 | `src/fit.ts` | `FitModule` | Builds region markers (dashed, stamped `customData.voiceRegion`, a rectangle on the stroke's bounding box for areas) with an animated placeholder, and fits transcripts by binary-searching the largest font size that leaves a throwaway probe container unchanged, measured through the library's own `convertToExcalidrawElements` → `redrawTextBoundingBox`. The commit copies that probe's layout onto a FREE text (containerId null, autoResize false at the fitted width) and marks the marker deleted in the same update. Line text wraps at the line-min floor instead of shrinking. |
 | `src/capture.ts` | `CreateVoiceCapture` | One long-lived `getUserMedia` stream → AudioWorklet (Blob-URL module) → Float32 ring buffer at 16 kHz; `wav(fromMs,toMs)` cuts a 16-bit mono WAV; mic transitions are pushed through `onMicChange`; `onLevel` and `noiseFloor` are RAW RMS (no display gain — that belongs to `level.ts`). |
-| `src/level.ts` | — | The ONE display mapping for loudness: raw RMS → meter %, plus the effective VAD threshold (max(setting, 3× floor)). Imported by the panel and the toolbar so a bar and a marker can never end up on two axes. |
+| `src/level.ts` | — | The ONE display mapping for loudness: raw RMS → meter %, plus the effective VAD threshold (max(setting, 3× floor)). Imported by the panel and the toolbar so a bar, a marker and the mic glyph's fill can never end up on three axes. |
 | `src/vad.ts` | `Vad` (internal to capture) | Energy VAD as a pure state machine over 20 ms RMS frames; boundaries reported as sample indices; tracks the room's noise floor (kept across `reset()`), effective threshold = max(setting, 3× floor). |
 | `src/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `src/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
 | `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. DOM-free. |
 | `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter) and only unbinds ghosts from containers that are not markers. |
-| `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. |
-| `src/settings-panel.tsx` | — | React settings dialog: URL, language, prompt, mic, font caps, pre-roll, VAD threshold over a live level meter, warm-mic, STT test. |
-| `src/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. |
-| `src/App.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the top-right settings gear, `window.__excalidrawVoice`. |
-| `src/voice.css` | — | Styles for the injected buttons, the panel and the level meter, on Excalidraw's CSS variables. |
+| `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
+| `src/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
+| `src/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. The glyph IS the level meter: `buttonVisualState` (pure, unit-tested) maps the status to `--voice-level` through `level.ts` plus the `voice-tool--armed/--recording/--speaking/--mic-missing` classes, and voice.css clips the capsule's fill to that level. |
+| `src/App.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the `<MainMenu>` (the library's fallback items reproduced + a "Voice settings…" entry), `window.__excalidrawVoice`. |
+| `src/voice.css` | — | Styles for the injected buttons, the mic glyph's level fill/ring, the panel (top-LEFT, under the main menu) and the level meter, on Excalidraw's CSS variables. |
 | `scripts/` | — | `copy-fonts.mjs` (prebuild), `deploy.sh`, `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs` / `kiosk-clear.mjs` (README "Probing the live kiosk" says which answers what). |
-| `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
+| `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, settings, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
 
 ## Invariants
 
@@ -83,6 +83,12 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 - **Latch vs. hold.** F9 is hold (`pressStart`/`pressEnd`, window blur ends it); the toolbar button is latch
   (`toggleLatch`, any tap length, ignored while holding). The wall panel has no keyboard — the latch path must
   always work, and no gesture on that button may open settings.
+- **Rendering a `<MainMenu>` REPLACES the library's fallback one.** App.tsx therefore reproduces LayerUI's
+  `DefaultMainMenu` composition item for item (with the same `UIOptions.canvasActions` guards) before adding ours;
+  an item deleted from that list disappears from the founder's board with no error. The e2e asserts the testids.
+- **`recording` is "the stream is open"; `speaking` is "the VAD kept this".** The mic glyph draws both, and only
+  `speaking` may use the accent colour — a level that fills but never turns green is a VAD threshold to adjust, and
+  conflating the two would hide exactly that. `speaking` is false whenever `mode === "idle"`, by construction.
 - **A dropped transcript is counted AND rendered.** Empty results and blocklist hits leave no ⚠ and no retry, so
   they are counted in `status.dropped` / `lastDropped` *and* shown: a toast at the moment of the drop
   (`Filtered: "…"` / `No speech heard for that shape`, 2.5 s) plus `dropped N` in the mic button's tooltip. A
@@ -96,7 +102,7 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 
 ```sh
 npm install   # once per checkout; Node 22
-npm test      # vitest: stroke, vad, assign, capture, controller, fit, persist, stt, hallucination, level, toolbar
+npm test      # vitest: stroke, vad, assign, capture, controller, fit, persist, settings, stt, hallucination, level, toolbar
 npm run build # tsc --noEmit -p tsconfig.json + vite build (prebuild copies fonts)
 npm run e2e   # Playwright; starts vite preview on 127.0.0.1:4173 itself; retries: 0
 ```

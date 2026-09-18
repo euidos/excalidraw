@@ -161,7 +161,8 @@ export type CheckHealth = (baseUrl: string) => Promise<{ ok: boolean; warm: bool
 /** settings.ts — persisted in localStorage under "voice-settings". */
 export interface VoiceSettings {
   sttUrl: string;
-  language: string; // "" = auto
+  /** "" = auto-detect. Only "" | "ko" | "en" (settings.ts ALLOWED_LANGUAGES); the STT server refuses the rest. */
+  language: string;
   prompt: string;
   deviceId: string; // "" = default mic
   maxFontSize: number;
@@ -199,6 +200,13 @@ export interface VoiceStatus {
   failed: number;
   mic: MicState;
   level: number; // last RMS 0..1
+  /**
+   * True between `onUtteranceStart` and `onUtteranceEnd`: the VAD has decided the current sound IS speech and the
+   * audio is being kept for a transcript. `recording` only says the microphone is open, which on a wall panel is
+   * indistinguishable from a dead mic — this is the field a surface draws to answer "is it hearing me right now".
+   * Always false while `mode === "idle"` (disarming closes every open utterance).
+   */
+  speaking: boolean;
   lastError?: string;
   /** Diagnostics for tests: highest number of simultaneously pending segments observed. */
   maxPendingSeen: number;

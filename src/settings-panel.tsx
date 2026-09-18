@@ -3,6 +3,29 @@ import { useEffect, useState } from "react";
 import type { CheckHealth, VoiceSettings } from "./contracts";
 import { meterScale } from "./level";
 
+/**
+ * The mic glyph for the main-menu entry that opens this panel (App.tsx). Sized in `em` because the library's own
+ * menu items size their icons off the item's font-size, not a fixed px box.
+ */
+export const voiceSettingsIcon = (
+  <svg
+    aria-hidden="true"
+    focusable="false"
+    viewBox="0 0 24 24"
+    width="1em"
+    height="1em"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+    <path d="M12 19v3" />
+  </svg>
+);
+
 export interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
@@ -21,12 +44,16 @@ type TestState = { kind: "idle" } | { kind: "testing" } | { kind: "done"; text: 
 const clamp = (v: number, lo: number, hi: number, fallback: number) =>
   Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
 
+/**
+ * The languages offered, in the order they are drawn. ko/en only (round 4b, founder request 4): the STT server
+ * enforces the same allow-list (`STT_LANGUAGES`) and restricts auto-detect to it, so "auto" can no longer answer a
+ * Korean utterance in Japanese. Values must stay a subset of settings.ts ALLOWED_LANGUAGES, which normalises a
+ * stored "ja"/"zh" back to auto.
+ */
 const LANGUAGES: Array<[string, string]> = [
   ["", "auto"],
   ["ko", "한국어 (ko)"],
   ["en", "English (en)"],
-  ["ja", "日本語 (ja)"],
-  ["zh", "中文 (zh)"],
 ];
 
 export function SettingsPanel({

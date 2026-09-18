@@ -34,6 +34,8 @@ import {
   launchWithClip,
   linePath,
   markers,
+  micGlyph,
+  readMicGlyphWatch,
   releaseHold,
   sceneBBox,
   seenUtterances,
@@ -49,6 +51,7 @@ import {
   waitForUtterance,
   waitForVoiceReady,
   waitUntilWall,
+  watchMicGlyph,
   type Pt,
   type SceneEl,
 } from "./helpers";
@@ -854,24 +857,44 @@ test.describe("voice areas", () => {
     }
   });
 
-  test("toolbar latch: tapping the voice tool arms and disarms it", async () => {
+  test("toolbar latch: tapping the voice tool arms and disarms it, and the glyph shows what the mic hears", async () => {
     const { browser, page } = await launchWithClip(EN_SHORT);
     try {
       const button = page.locator('[data-testid="toolbar-voice"]');
+
+      // Idle is a static outline: nothing is being heard, and nothing pretends to be (round 4b request 2).
+      const cold = await micGlyph(page);
+      expect(cold, "idle glyph").toEqual({ armed: false, speaking: false, level: 0 });
+
       await button.click();
       await expect.poll(async () => (await status(page)).mode, { timeout: 10_000 }).toBe("latched");
       await expect(button).toHaveClass(/voice-tool--armed/);
       await page.waitForFunction(() => window.__excalidrawVoice!.status().recording === true, undefined, {
         timeout: 15_000,
       });
+      // The fixture starts playing at the arm, so the sampler has to be running before the speech does.
+      await watchMicGlyph(page);
 
       const view = await transform(page);
       const path = oval({ x: 700, y: 450 }, 20);
       const region = sceneBBox(view, path);
       await drawStroke(page, path, { stepMs: 16 });
       await page.waitForTimeout(4_000);
+
+      // While armed the capsule filled and the accent came on: the fill is proportional to the level and the accent
+      // is the VAD's own verdict, so together they are the "your voice is being recognised" signal.
+      const heard = await readMicGlyphWatch(page);
+      expect(heard.samples, "the in-page sampler ran").toBeGreaterThan(20);
+      expect(heard.peakLevel, "the mic capsule filled while the clip played").toBeGreaterThan(0);
+      expect(heard.sawSpeaking, "the accent came on while an utterance was open").toBe(true);
+      await evidence(page, "round4b-glyph-armed");
+
       await button.click();
       await expect.poll(async () => (await status(page)).mode, { timeout: 10_000 }).toBe("idle");
+      // Back to a static outline: a disarmed tool must not keep showing the last level it saw.
+      await expect
+        .poll(async () => await micGlyph(page), { timeout: 10_000 })
+        .toEqual({ armed: false, speaking: false, level: 0 });
 
       await expect.poll(async () => joined(await elements(page)), { timeout: 30_000 }).toMatch(/voice/i);
       const latched = await elements(page);
@@ -879,6 +902,65 @@ test.describe("voice areas", () => {
       expect(wordsIn(latched, region), "the words are inside the region that was drawn").toMatch(/voice/i);
       await expect(button).not.toHaveClass(/voice-tool--armed/);
       await evidence(page, "toolbar-latch");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("settings live in the main menu: no gear, nothing lost from the vanilla menu, ko/en only", async () => {
+    const { browser, page } = await launchWithClip(EN_SHORT);
+    try {
+      // Founder request 3: the top-right gear is gone, not merely duplicated.
+      await expect(page.locator('[data-testid="voice-settings-gear"]')).toHaveCount(0);
+      await expect(page.locator(".voice-settings")).toHaveCount(0);
+
+      await page.locator('[data-testid="main-menu-trigger"]').click();
+      /*
+       * Rendering our own <MainMenu> REPLACES the library's fallback one, so a forgotten item disappears silently.
+       * These are the fallback's own items (LayerUI DefaultMainMenu) by the testids the library gives them — Open,
+       * Export, Export image, Find, Help, Reset the canvas, dark mode, canvas background — plus ours.
+       *
+       * `SaveToActiveFile` is rendered but deliberately not asserted: the library returns null for it until the
+       * scene has a file handle, so it is absent from the vanilla fallback menu on a fresh boot too. (The visible
+       * "Save to…" row is `Export`/json-export-button, which IS asserted.) Gating on it would gate on the File
+       * System Access API, not on our composition.
+       */
+      for (const testid of [
+        "load-button",
+        "json-export-button",
+        "image-export-button",
+        "search-menu-button",
+        "help-menu-item",
+        "clear-canvas-button",
+        "toggle-dark-mode",
+        "canvas-background-label",
+        "menu-voice-settings",
+      ]) {
+        await expect(page.locator(`[data-testid="${testid}"]`), testid).toHaveCount(1);
+      }
+      await evidence(page, "round4b-main-menu");
+
+      await page.locator('[data-testid="menu-voice-settings"]').click();
+      const panel = page.locator('[role="dialog"][aria-label="Voice settings"]');
+      await expect(panel).toBeVisible();
+
+      // Founder request 4: ja/zh are gone from the only surface that can select them.
+      const options = panel
+        .locator(".voice-settings__row", { hasText: "Language" })
+        .locator("select option");
+      expect(await options.evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value))).toEqual([
+        "",
+        "ko",
+        "en",
+      ]);
+      await evidence(page, "round4b-menu-settings");
+
+      // The panel moved, the F9 guard did not: a key pressed inside one of its fields must not arm the tool
+      // (App.isPanelInput), or editing the STT URL would record the room.
+      await panel.locator('input[type="text"]').first().focus();
+      await page.keyboard.press("F9");
+      await page.waitForTimeout(300);
+      expect((await status(page)).mode, "F9 inside a panel field arms nothing").toBe("idle");
     } finally {
       await browser.close();
     }

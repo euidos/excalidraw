@@ -28,7 +28,12 @@ const DEFAULT_BUFFER_SECONDS = 300;
 /** ~2048 samples per post keeps the main-thread work to ~20 messages/s at 48 kHz. */
 const CHUNK_SAMPLES = 2048;
 const FRAME_MS = 20;
-const LEVEL_INTERVAL_MS = 100;
+/**
+ * How often onLevel fires. 20 Hz, not 10: the toolbar's mic glyph fills in proportion to this number with a ~100 ms
+ * CSS transition, and at 10 Hz the fill visibly stair-steps. One chunk is ~43 ms at 48 kHz, so this is close to
+ * "every chunk" and still one DOM write per chunk, not one per frame.
+ */
+const LEVEL_INTERVAL_MS = 50;
 /** Chunks whose measured offset is taken as-is before the EMA takes over (also after a graph rebuild). */
 const OFFSET_WARMUP_CHUNKS = 3;
 const OFFSET_ALPHA = 0.1;

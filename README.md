@@ -28,14 +28,21 @@ npm install     # dependencies + the Playwright browser download used by npm run
 ## Using it on the whiteboard
 
 1. **Arm it.** Hold **F9**, or tap the mic button to latch it on; tap again to turn it off — a tap of any
-   length latches. The button glows while armed and pulses with your voice. If the microphone is dead the tool
-   refuses to arm and says why in a toast.
+   length latches. If the microphone is dead the tool refuses to arm and says why in a toast.
+
+   *Reading the icon:* idle is a plain outline. While armed, **the mic capsule fills from the bottom in
+   proportion to how loud the room is** and a ring around it grows with the same number, so "is it listening"
+   is answerable from across the room. The fill turns **green** while the app has decided the sound is speech
+   and is keeping it (the VAD's own verdict) — that green is "your voice is being recognised"; a grey fill that
+   never turns green means the room is loud but nothing crossed the speech threshold, which is a **VAD
+   threshold** to adjust in settings. A small red dot pulses whenever the stream is open, even in silence.
 
    *Finding the button:* it sits **inside the library's own toolbar island at the top of the screen**, appended
    **after the last native tool** (the one at the right end of the row: lock, hand, selection, rectangle,
    diamond, ellipse, arrow, line, draw, text, image, eraser, frame, …) and before the divider and the "more
    tools" chevron. It is a line-art **microphone glyph** (capsule head, U-shaped cradle, short stand) with the
-   keybinding **F9** in its corner, same size and frame as every native tool button; `aria-label` is
+   keybinding **F9** in its corner (the capsule doubles as the level meter above), same size and frame as every
+   native tool button; `aria-label` is
    **"Voice area"** and `data-testid` is `toolbar-voice`. The circular-arrow **retry** button appears
    immediately to its right — but only once at least one transcription has failed; with nothing failed it is
    hidden, so an unarmed, healthy board shows the mic alone.
@@ -74,12 +81,14 @@ filtered text is toasted as **Filtered: "…"** for 2.5 s, and the mic button's 
 
 ### Settings
 
-The **⚙ gear in the top-right** opens the panel (the mic button only latches).
+Open the **top-left menu** (the hamburger, next to Open / Export image / Reset the canvas) and pick
+**Voice settings…**; the panel opens under it. The mic button in the toolbar only latches — no gesture on it
+opens settings, because on the IR frame a "tap" is routinely 700 ms and long-press used to steal those taps.
 
 | Setting | Default | What it is for |
 | --- | --- | --- |
 | STT URL | `http://100.81.33.83:8770` | Any OpenAI-compatible transcription endpoint works as a stand-in. |
-| Language | auto | Force `ko`/`en`/`ja`/`zh` when auto-detection keeps guessing wrong. |
+| Language | auto | Force `ko` or `en` when auto-detection keeps guessing wrong. Those two are the only languages enabled: the STT server's own allow-list (`STT_LANGUAGES`, default `ko,en`) restricts auto-detection to them and answers any other explicit language with 400, which is what stopped Korean coming back as Japanese. A stored `ja`/`zh` from an older build is reset to auto on load. |
 | Prompt | empty | Hint words (names, jargon) handed to whisper. |
 | Microphone | Default | The whiteboard has several inputs; an exact device that fails falls back to the default. |
 | Max font size | 96 | Upper bound for text inside an area. |

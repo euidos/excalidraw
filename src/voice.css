@@ -30,6 +30,68 @@ body,
   color: var(--color-on-primary-container);
 }
 
+/*
+ * ---- the glyph IS the level meter (round 4b, founder request 2) ----
+ *
+ * --voice-level is this surface's display value for the RAW RMS the capture emits: toolbar.tsx runs it through
+ * src/level.ts (gate N12 — one unit, one mapping) so the glyph, the ring and the settings meter cannot disagree.
+ *
+ * The clip rect is scaled from its own bottom edge, so the capsule fills like a tube. `transform-box: fill-box` is
+ * what makes `transform-origin: bottom` mean "the bottom of this rect" instead of "the bottom of the SVG viewport".
+ * The transition covers a whole level tick (capture.ts LEVEL_INTERVAL_MS = 50) so the 20 Hz feed reads continuous.
+ */
+.voice-mic__clip {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  transform: scaleY(var(--voice-level, 0));
+  transition: transform 100ms linear;
+}
+
+/* Idle is a static outline: no fill, no ring, so armed vs idle is one glance from across the room. */
+.voice-tool:not(.voice-tool--armed) .voice-mic__clip {
+  transform: scaleY(0);
+}
+
+.voice-mic__fill {
+  /* Slightly translucent so the outline's own stroke still reads at full level. */
+  opacity: 0.75;
+}
+
+/* A soft halo that grows with the level. Hollow, so it never eats the glyph. */
+.voice-tool__ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.7);
+  pointer-events: none;
+  transition: transform 100ms linear, opacity 100ms linear;
+}
+
+.voice-tool--armed .voice-tool__ring {
+  opacity: calc(0.18 + 0.42 * var(--voice-level, 0));
+  transform: scale(calc(0.7 + 0.55 * var(--voice-level, 0)));
+}
+
+/*
+ * The VAD has decided this is speech and the audio is being kept: THE signal the founder asked for ("voice input is
+ * being recognized"). Green rather than "bigger", because size already means loudness — below the VAD line the same
+ * fill is neutral, so loud room noise and an accepted utterance never look alike.
+ */
+.voice-tool--speaking .voice-mic__fill,
+.voice-tool--speaking .voice-tool__ring {
+  color: var(--voice-accent, #2f9e44);
+}
+
+.voice-tool--speaking .voice-mic__fill {
+  opacity: 1;
+}
+
 .voice-tool__badge {
   position: absolute;
   top: -2px;
@@ -66,8 +128,8 @@ body,
 .voice-tool--recording .voice-tool__dot {
   opacity: 1;
   animation: voice-pulse 1s ease-in-out infinite;
-  /* --voice-level is this surface's display gain over the RAW RMS the capture emits (toolbar.tsx, src/level.ts):
-     the dot swells with the room so the founder can see the mic is hearing them without opening settings. */
+  /* Secondary: "the stream is open" (which the capsule fill cannot say when the room is silent). The level signal
+     itself is the capsule above — this only swells a little so the dot does not compete with it. */
   box-shadow: 0 0 0 calc(3px * var(--voice-level, 0)) rgba(224, 49, 49, 0.35);
 }
 
@@ -119,10 +181,11 @@ body,
 
 /* ---- settings panel ---- */
 
+/* Under the top-left main menu, which is where the item that opens it lives (round 4b, founder request 3). */
 .voice-settings {
   position: fixed;
   top: 84px;
-  right: 16px;
+  left: 16px;
   z-index: 100;
   width: calc(100vw - 32px);
   max-width: 360px;

@@ -4,9 +4,9 @@
  * persist.ts owns storage, and this file only creates the singletons once the imperative API exists and forwards
  * status to the toolbar.
  */
-import { Excalidraw, useHandleLibrary } from "@excalidraw/excalidraw";
+import { Excalidraw, MainMenu, useHandleLibrary } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { assignUtterance } from "./assign";
 import { createVoiceCapture } from "./capture";
 import type { ToolbarHandle, VoiceSettings, VoiceStatus } from "./contracts";
@@ -14,7 +14,7 @@ import type { VoiceCapture } from "./contracts-capture";
 import { createVoiceController } from "./controller";
 import { fit } from "./fit";
 import { createPersister, libraryAdapter, loadInitialData } from "./persist";
-import { SettingsPanel } from "./settings-panel";
+import { SettingsPanel, voiceSettingsIcon } from "./settings-panel";
 import { loadSettings, saveSettings, subscribe } from "./settings";
 import { recognizeStroke } from "./stroke";
 import { checkHealth, transcribe } from "./stt";
@@ -30,19 +30,6 @@ const UI_OPTIONS = {
     toggleTheme: true,
   },
 } as const;
-
-const GEAR_STYLE: CSSProperties = {
-  width: "2.25rem",
-  height: "2.25rem",
-  border: "none",
-  borderRadius: "var(--border-radius-lg, 0.5rem)",
-  background: "var(--island-bg-color, #fff)",
-  boxShadow: "var(--shadow-island, 0 1px 4px rgba(0,0,0,0.16))",
-  color: "var(--color-on-surface, #1b1b1f)",
-  cursor: "pointer",
-  fontSize: "1rem",
-  lineHeight: 1,
-};
 
 /** The vanilla app persists the UI language under this key; undefined lets the library auto-detect. */
 const langCode = (() => {
@@ -221,23 +208,6 @@ export default function App() {
     });
   }, [settings.vadThreshold, settings.minSegmentMs]);
 
-  const renderTopRightUI = useCallback(
-    () => (
-      <button
-        type="button"
-        // Styled inline: voice.css belongs to the toolbar module and carries no rule for this button.
-        style={GEAR_STYLE}
-        data-testid="voice-settings-gear"
-        title="Voice settings"
-        aria-label="Voice settings"
-        onClick={() => setPanelOpen((open) => !open)}
-      >
-        ⚙
-      </button>
-    ),
-    [],
-  );
-
   return (
     <div ref={wrapperRef} style={{ height: "100%", width: "100%" }}>
       <Excalidraw
@@ -246,8 +216,40 @@ export default function App() {
         onChange={persister.onChange}
         langCode={initialLangCode}
         UIOptions={UI_OPTIONS}
-        renderTopRightUI={renderTopRightUI}
-      />
+      >
+        {/*
+         * Rendering a <MainMenu> REPLACES the library's fallback one (LayerUI's DefaultMainMenu, kept behind
+         * `__fallback`), so every item the founder has today has to be reproduced here or it silently disappears.
+         * The list below is that fallback's composition, in its order, with the same UIOptions.canvasActions guards —
+         * plus our own entry at the end. Round 4b (founder request 3) moved voice settings here from a top-right gear:
+         * the founder wanted it next to Open / Save to / Reset the canvas, not as a second floating control.
+         */}
+        <MainMenu>
+          <MainMenu.DefaultItems.LoadScene />
+          <MainMenu.DefaultItems.SaveToActiveFile />
+          {UI_OPTIONS.canvasActions.export && <MainMenu.DefaultItems.Export />}
+          {UI_OPTIONS.canvasActions.saveAsImage && <MainMenu.DefaultItems.SaveAsImage />}
+          <MainMenu.DefaultItems.SearchMenu />
+          <MainMenu.DefaultItems.Help />
+          <MainMenu.DefaultItems.ClearCanvas />
+          <MainMenu.Separator />
+          {/* Own group: the voice tool is this wrapper's addition, not one of the canvas actions above. */}
+          <MainMenu.Item
+            icon={voiceSettingsIcon}
+            data-testid="menu-voice-settings"
+            onSelect={() => setPanelOpen(true)}
+          >
+            Voice settings…
+          </MainMenu.Item>
+          <MainMenu.Separator />
+          <MainMenu.Group title="Excalidraw links">
+            <MainMenu.DefaultItems.Socials />
+          </MainMenu.Group>
+          <MainMenu.Separator />
+          <MainMenu.DefaultItems.ToggleTheme />
+          <MainMenu.DefaultItems.ChangeCanvasBackground />
+        </MainMenu>
+      </Excalidraw>
       <SettingsPanel
         open={panelOpen}
         onClose={() => setPanelOpen(false)}

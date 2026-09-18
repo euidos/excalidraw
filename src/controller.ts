@@ -200,6 +200,13 @@ export const createVoiceController: CreateVoiceController = ({
   let orphanCount = 0;
   let droppedCount = 0;
   let lastDropped: string | undefined;
+  /**
+   * Utterances the VAD has opened and not yet closed. `capture.active` only says the stream is open, which on the
+   * wall panel looks the same as a dead microphone; this set is what `status.speaking` reports, so the mic glyph can
+   * say "these words are being kept" while they are being spoken. Ids, not a counter: an end event for an id that
+   * was never opened (or arrives twice) must not push the count negative.
+   */
+  const openUtterances = new Set<number>();
   let lastTranscript: string | undefined;
   let disposed = false;
   /** armBody owns the mic outcome while it runs; onMicChange must not disarm underneath it. */
@@ -220,6 +227,8 @@ export const createVoiceController: CreateVoiceController = ({
     failed: failed.size,
     mic: capture.mic,
     level,
+    // Mode-gated so the field is false by construction while idle, whatever the VAD left behind.
+    speaking: mode !== "idle" && openUtterances.size > 0,
     lastError,
     maxPendingSeen,
     completed,
@@ -949,6 +958,7 @@ export const createVoiceController: CreateVoiceController = ({
       owner.utterances.set(u.id, { id: u.id, onsetMs: u.onsetMs, resolved: false });
       utteranceSession.set(u.id, owner);
       utteranceCount += 1;
+      openUtterances.add(u.id);
       emit();
     } catch (err) {
       fail(err);
@@ -963,6 +973,8 @@ export const createVoiceController: CreateVoiceController = ({
       console.warn("[voice] onUtteranceEnd listener threw", err);
     }
     try {
+      // Cleared before the early return: a closed utterance is no longer speech even if its session has gone.
+      openUtterances.delete(u.id);
       const owner = utteranceSession.get(u.id);
       const entry = owner?.utterances.get(u.id);
       if (disposed || !owner || !entry) {
@@ -1110,6 +1122,9 @@ export const createVoiceController: CreateVoiceController = ({
     const owner = session;
     session = null;
     currentStroke = null;
+    // The mic is going away, so nothing can still be "being spoken" — stop() fires the end events for open
+    // utterances, but a stream that died mid-utterance never will.
+    openUtterances.clear();
     if (!owner) {
       restoreTool();
       emit();
