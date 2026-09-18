@@ -26,10 +26,11 @@ way — the fork merges upstream, so every edited upstream line is a future conf
 **What the port changed on purpose** (0.2.0 phase 2; the full list is the builder's API-drift note in
 `euidos/casebook/iteration/0.2.0-collab/`):
 
-- The app owns storage, so `persist.ts`'s `createPersister` / `loadInitialData` / `libraryAdapter` are NOT wired:
-  `excalidraw-app/data/LocalData.ts` + `data/euidosStorage.ts` + the app's own `useHandleLibrary` already own the
-  vanilla keys and the room backend. `sweepGhostPlaceholders` is the only export the app calls, and it now runs on
-  BOTH load paths — local restore and the collab room load (phase-1 gate G-P2.2).
+- The app owns storage, so `persist.ts`'s vanilla-storage half (`createPersister` / `loadInitialData` /
+  `libraryAdapter`) was never wired and was DELETED in phase 3 (G-P2.10): `excalidraw-app/data/LocalData.ts` +
+  `data/euidosStorage.ts` + the app's own `useHandleLibrary` already own the vanilla keys and the room backend.
+  `sweepGhostPlaceholders` is the module's only export, and it runs on BOTH load paths — local restore and the
+  collab room load (phase-1 gate G-P2.2).
 - The toolbar's DOM: master renders a tool as `button.ToolIcon[data-testid="toolbar-…"]`, not 0.18.1's
   `label.ToolIcon` around a hidden input. `toolbar.tsx` matches and injects buttons accordingly.
 - No font copying: the app has its own woff2 pipeline and sets `EXCALIDRAW_ASSET_PATH` itself, so
@@ -135,7 +136,7 @@ reverted if the final assignment picks a different region. Measured on the real 
 | `voice/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `voice/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
 | `voice/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. Round 5: `transcribeUtterance` (send at utterance end) and `runAssignment` (choose the region) both end at `settle`; `sendInterim`/`scheduleInterim`/`showInterim` drive the previews and `renderEntry` derives a region's appearance from its own state (parts → interim previews → placeholder), writing words with `IMMEDIATELY` only when they actually change. Round 5b: the pen-down barrier is per utterance, and a resolved utterance's WAV is released (only the `failed` map keeps audio). DOM-free. |
-| `voice/persist.ts` | — | In THIS app only `sweepGhostPlaceholders` is wired (both load paths); the vanilla-storage half (`createPersister`, `loadInitialData`, `libraryAdapter`) is dead weight the app must never call, kept because narrowing a contract is a design decision. `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. Every deletion and every unbind goes through `newElementWith`, so it is a real versioned edit — see the reconciler invariant below. `SweepOptions.keepRecentMs` (`LIVE_SCAFFOLDING_MS`, 30 s) is passed by the COLLAB call site only: it spares a take whose scaffolding is still beating. |
+| `voice/persist.ts` | — | In THIS app only `sweepGhostPlaceholders` is wired (both load paths); the vanilla-storage half (`createPersister`, `loadInitialData`, `libraryAdapter`) was dead weight the app never called and was deleted in phase 3 (G-P2.10), so `sweepGhostPlaceholders` is now the only export. `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. Every deletion and every unbind goes through `newElementWith`, so it is a real versioned edit — see the reconciler invariant below. `SweepOptions.keepRecentMs` (`LIVE_SCAFFOLDING_MS`, 30 s) is passed by the COLLAB call site only: it spares a take whose scaffolding is still beating. |
 | `voice/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
 | `voice/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, interim interval, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
 | `voice/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. The glyph IS the level meter: `buttonVisualState` (pure, unit-tested) maps the status to `--voice-level` through `level.ts` plus the `voice-tool--armed/--recording/--speaking/--mic-missing` classes, and voice.css clips the capsule's fill to that level. |
@@ -320,8 +321,7 @@ is frozen until the founder approves the cutover** — read from it, never write
 - Do not commit `excalidraw-app/build/`, `test-results/` or `playwright-report/` — all generated, all ignored.
 - Do not edit another module's files, the contracts, `package.json` or configs when you own a module; ask.
 - Do not leave a module in `voice/` that nothing imports, or a contract nothing implements; two contradicting
-  contracts is how round 1 shipped the wrong segmenter. (Open decision carried from the port: `persist.ts` still
-  exports `createPersister` / `loadInitialData` / `libraryAdapter`, which this app must never call.)
+  contracts is how round 1 shipped the wrong segmenter.
 - Do not delete a shared-scene element with a shallow `{ ...el, isDeleted: true }`. See the reconciler invariant.
 - Do not claim a gate is met from a mocked run, a unit test, a build that was never loaded in a browser, or a
   parameter chosen from a builder's report instead of the declared operating envelope.

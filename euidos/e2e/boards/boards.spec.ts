@@ -240,6 +240,18 @@ test("the wall may open and copy, but is shown no rename or delete control", asy
   await expect(page.getByTestId("board-rename")).toHaveCount(0);
   await expect(page.getByTestId("board-delete")).toHaveCount(0);
 
+  // ...and the hidden buttons are a convenience, not the boundary: the same two
+  // writes, header-less and same-origin, must be refused by the BACKEND. A
+  // regression that dropped requireNamedIdentity would otherwise leave every
+  // gate in this file green.
+  const wallWrite = (method: "patch" | "delete") =>
+    wall.request[method](`${ORIGIN}/api/boards/${older.id}`, {
+      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
+      data: method === "patch" ? { name: "wall was here" } : undefined,
+    });
+  expect((await wallWrite("patch")).status()).toBe(403);
+  expect((await wallWrite("delete")).status()).toBe(403);
+
   const row = rowFor(page, older.id);
   await expect(row.getByTestId("board-copy")).toBeEnabled();
   await row.getByTestId("board-copy").click();
@@ -275,7 +287,7 @@ test("the wall may open and copy, but is shown no rename or delete control", asy
   await page.close();
 });
 
-test("a board whose roomKey was never stored says 'Link unavailable' instead of handing out a broken link", async ({
+test("a board whose roomKey was never stored offers no way to open or share it", async ({
   request,
 }) => {
   // G-P3.2: rows like this exist from before phase 1 stored the key with the
@@ -291,9 +303,15 @@ test("a board whose roomKey was never stored says 'Link unavailable' instead of 
   expect(created.status()).toBe(201);
 
   const page = await boardsPage(alice);
-  const copy = rowFor(page, legacy.id).getByTestId("board-copy");
-  await expect(copy).toHaveText("Link unavailable");
-  await expect(copy).toBeDisabled();
+  const row = rowFor(page, legacy.id);
+
+  // no link means no OPEN either: clicking the name used to navigate to
+  // "#room=legacyboard0000," — a hash the editor ignores, so the user landed in
+  // their own private local scene wearing that board's name
+  await expect(row.getByTestId("board-open")).toHaveCount(0);
+  await expect(row.getByTestId("board-copy")).toHaveCount(0);
+  await expect(row.getByTestId("board-name-unopenable")).toHaveText(legacy.name);
+  await expect(row.getByTestId("board-no-link")).toBeVisible();
   await page.close();
 });
 
@@ -331,6 +349,98 @@ test("bob deletes the board with a scene: alice's list drops it and its link 404
   await openEditor(stale);
   await expect(stale.locator("canvas.static")).toBeVisible();
   await stale.close();
+});
+
+test("the row's secondary buttons look like buttons in the default light theme", async () => {
+  // regression: `--island-bg-color-alt` is #fff in light theme, the same colour
+  // as the row behind it, with a transparent border — so "Copy link"/"Rename"
+  // rendered as plain text and only "New board" looked clickable. Dark theme
+  // happened to be fine, which is why a screenshot of one theme did not show it.
+  const page = await boardsPage(alice);
+  const row = page.getByTestId("board-row").first();
+
+  const paint = await row.evaluate((element) => {
+    const button = element.querySelector(
+      '[data-testid="board-copy"], [data-testid="board-rename"]',
+    ) as HTMLElement;
+    const style = getComputedStyle(button);
+    return {
+      row: getComputedStyle(element).backgroundColor,
+      background: style.backgroundColor,
+      border: style.borderTopColor,
+    };
+  });
+
+  expect(paint.background).not.toBe(paint.row);
+  expect(paint.border).not.toBe("rgba(0, 0, 0, 0)");
+  await page.close();
+});
+
+/**
+ * The two ways out of a live board. Both used to lose everything drawn since
+ * the last throttled save (SYNC_FULL_SCENE_INTERVAL_MS = 20 s, leading:false):
+ * Back is a same-document hash change, so nothing unloads and no beforeunload
+ * can warn; the main-menu item unloads, but the unload path only closes the
+ * socket. Each now flushes the scene first.
+ */
+test("Back out of a board keeps what was drawn", async () => {
+  const page = await alice.newPage();
+  // start at the BARE origin, which is the list: opening a board from here is
+  // an in-place hash swap, which is exactly the case that cannot unload
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("boards-page").waitFor();
+
+  await page.getByTestId("boards-new").click();
+  await page.getByTestId("boards-new-name").fill("Back button board");
+  await page.getByTestId("boards-new-submit").click();
+  await page.waitForURL(/#room=/, { timeout: 30_000 });
+  const board = parseRoomLink(page.url());
+  await openEditor(page);
+
+  await drawRectangle(page);
+  // immediately: the throttled save is ~20 s away, so anything saved here was
+  // saved BECAUSE of the navigation
+  await page.goBack();
+  await page.getByTestId("boards-page").waitFor({ timeout: 30_000 });
+
+  const scene = await alice.request.get(`${ORIGIN}/api/rooms/${board.id}`);
+  expect(scene.status()).toBe(200);
+  expect((await scene.json()).elements.length).toBe(1);
+
+  await expect(
+    rowFor(page, board.id).getByTestId("board-meta"),
+  ).toContainText("1 element");
+  await page.close();
+});
+
+test("the main menu's Boards item saves too, and does not prompt on the way out", async () => {
+  const page = await alice.newPage();
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.message());
+    void dialog.dismiss();
+  });
+
+  await page.goto("/boards", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("boards-new").click();
+  await page.getByTestId("boards-new-name").fill("Menu exit board");
+  await page.getByTestId("boards-new-submit").click();
+  await page.waitForURL(/#room=/, { timeout: 30_000 });
+  const board = parseRoomLink(page.url());
+  await openEditor(page);
+
+  await drawRectangle(page);
+  await page.getByTestId("main-menu-trigger").click();
+  await page.getByTestId("menu-boards").click();
+  await page.waitForURL(/\/boards$/, { timeout: 30_000 });
+  await page.getByTestId("boards-page").waitFor();
+
+  const scene = await alice.request.get(`${ORIGIN}/api/rooms/${board.id}`);
+  expect(scene.status()).toBe(200);
+  expect((await scene.json()).elements.length).toBe(1);
+  // a "Leave site?" prompt here means the app navigated away from unsaved work
+  expect(dialogs).toEqual([]);
+  await page.close();
 });
 
 test("nothing in the run threw an uncaught error in the page", () => {
