@@ -1,0 +1,7 @@
+node_modules/
+test-results/
+
+# The fork's root .gitignore drops every package-lock.json (it is a yarn repo);
+# this sub-project is npm and its lockfile pins the browser build that the
+# shared ~/.cache/ms-playwright download must match.
+!package-lock.json

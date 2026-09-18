@@ -1,0 +1,13 @@
+{
+  "name": "@euidos/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "End-to-end checks that run against the DEPLOYED board app, not a dev server.",
+  "type": "module",
+  "scripts": {
+    "collab-smoke": "node collab-smoke.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
