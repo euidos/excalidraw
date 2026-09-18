@@ -139,8 +139,7 @@ import { useSimulatedCollaborators } from "./debugCollaborators";
 import { AIComponents } from "./components/AI";
 import { ExcalidrawPlusIframeExport } from "./ExcalidrawPlusIframeExport";
 
-import { VoiceTool } from "./voice/VoiceTool";
-import { sweepGhostPlaceholders } from "./voice/persist";
+import { sweepGhostPlaceholders, VoiceTool } from "./voice";
 
 import "./index.scss";
 

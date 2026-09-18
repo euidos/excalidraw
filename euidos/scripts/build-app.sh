@@ -48,6 +48,13 @@ fi
 bundle="$(grep -o 'assets/[A-Za-z0-9._-]*\.js' "$index_html" | head -n 1)"
 echo "==> built $index_html"
 echo "==> entry bundle: ${bundle:-<none found in index.html>}"
+# The directory size is dominated by fonts and source maps and cannot detect a bundle regression, so the entry
+# bundle is reported in BYTES (raw and gzipped) as well: that is the number a phase-over-phase comparison needs.
+if [ -n "$bundle" ] && [ -f "excalidraw-app/build/$bundle" ]; then
+  raw="$(stat -c%s "excalidraw-app/build/$bundle")"
+  gz="$(gzip -9 -c "excalidraw-app/build/$bundle" | wc -c)"
+  echo "==> entry bundle bytes: $raw raw / $gz gzipped"
+fi
 echo "==> build size: $(du -sh excalidraw-app/build | cut -f1)"
 
 if grep -rqi "firebaseio\|firebasestorage\.googleapis" excalidraw-app/build/assets 2>/dev/null; then

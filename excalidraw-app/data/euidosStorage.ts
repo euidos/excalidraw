@@ -202,6 +202,18 @@ export const saveToFirebase = async (
   portal: Portal,
   elements: readonly SyncableExcalidrawElement[],
   appState: AppState,
+  /**
+   * Re-read the LIVE scene before a retry.
+   *
+   * The caller snapshots the scene once (Collab.saveCollabRoomToFirebase clones it), so without this the loop
+   * re-reconciles the SAME stale array on every attempt and a save that loses a 409 race writes what the canvas
+   * looked like when the save began. That is usually invisible, because it self-heals on the next save cycle —
+   * except that the voice tool rewrites one element IN PLACE as it works (the interim preview and the final
+   * transcript share an id), so a save that starts mid-utterance and retries can persist the 45 %-opacity
+   * preview as the stored state of a sentence the author's canvas has already committed. Firestore's
+   * runTransaction re-read for the code this loop replaced; this is that re-read.
+   */
+  getLiveElements?: () => readonly SyncableExcalidrawElement[],
 ) => {
   const { roomId, roomKey, socket } = portal;
   if (
@@ -217,18 +229,26 @@ export const saveToFirebase = async (
   // read -> reconcile -> write, retried while another writer commits in
   // between: the 409 is the backend refusing to let us overwrite a version we
   // never saw (see MAX_SAVE_ATTEMPTS).
+  let outgoing = elements;
+
   for (let attempt = 1; attempt <= MAX_SAVE_ATTEMPTS; attempt++) {
+    // Attempt 1 uses what the caller handed us (it is the snapshot the caller decided to save); every RETRY asks
+    // the caller for the scene as it is NOW, so a conflict is merged against the live canvas and not a snapshot
+    // that may already be several hundred milliseconds out of date.
+    if (attempt > 1 && getLiveElements) {
+      outgoing = getLiveElements();
+    }
     const stored = await loadStoredScene(roomId);
 
     const nextElements = stored
       ? getSyncableElements(
           reconcileElements(
-            elements,
+            outgoing,
             stored.elements as OrderedExcalidrawElement[] as RemoteExcalidrawElement[],
             appState,
           ),
         )
-      : elements;
+      : outgoing;
 
     if (!stored && nextElements.length === 0) {
       // A "#room=" link that was opened and never drawn on. Writing an empty

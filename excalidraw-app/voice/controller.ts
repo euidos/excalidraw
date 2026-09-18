@@ -50,6 +50,7 @@ import {
   type StrokeRecord,
   type UtteranceEvent,
 } from "./contracts-capture";
+import { sweepGhostPlaceholders } from "./persist";
 
 type CaptureAction =
   typeof CaptureUpdateAction[keyof typeof CaptureUpdateAction];
@@ -86,7 +87,7 @@ const VERTICAL_LINE_AREA_SCREEN_PX = 80;
  */
 const isScaffoldText = (text: string): boolean => {
   const t = text.trim();
-  return t === "" || /^\u00b7{1,3}$/.test(t) || t.startsWith(FAILED_TEXT);
+  return t === "" || /^·{1,3}$/.test(t) || t.startsWith(FAILED_TEXT);
 };
 
 const NATIVE_TOOL_SET: ReadonlySet<string> = new Set<string>(
@@ -1992,6 +1993,31 @@ export const createVoiceController: CreateVoiceController = ({
     dispose(): void {
       if (disposed) {
         return;
+      }
+      // The scene FIRST, while the api is still ours to write to. Everything below aborts the work in flight; this
+      // removes what that work had already drawn. Until round 5b's review this was missing, and it mattered more
+      // than it looks: a take interrupted by an unmount left its dashed marker, its "·" placeholder and its
+      // 45 %-opacity interim preview on the canvas, and in a ROOM those are everyone's — Collab's beforeUnload
+      // deliberately saves the scene on the way out, so the litter was written into `/api/rooms` for every future
+      // joiner. The rule is exactly the load path's rule, so it is the load path's function: it deletes only what
+      // the tool stamped, and it cannot touch a committed transcript (voice/persist.ts, and its own gates).
+      //
+      // NOT a cure for a real tab CLOSE: React unmount does not run then, and Collab registers its own
+      // beforeUnload listener in its constructor, i.e. before this component exists, so no later listener can
+      // clean the scene before Collab clones it. That case is the load-path sweep's job, which is why the
+      // tombstones it writes have to be version-bumped and broadcastable. See euidos/docs/voice-tool-CLAUDE.md.
+      try {
+        const current = api.getSceneElementsIncludingDeleted();
+        const swept = sweepGhostPlaceholders(current);
+        if (swept.some((el, i) => el !== current[i])) {
+          // NEVER: a teardown is not an action the founder took and must not land on their undo stack.
+          api.updateScene({
+            elements: swept,
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
+        }
+      } catch (err) {
+        console.warn("[voice] dispose could not sweep its scaffolding", err);
       }
       disposed = true;
       offPointerDown();

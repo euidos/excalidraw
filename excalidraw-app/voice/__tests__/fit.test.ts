@@ -691,3 +691,29 @@ describe("failure keeps the marker, a discard keeps nothing", () => {
     ).toBe(true);
   });
 });
+
+/**
+ * warmFonts is the "fitting waits for the fonts" invariant, and the invariant is per FAMILY: the library only
+ * loads a webfont when text in it is first measured, so a family nobody has measured is still a fallback fit no
+ * matter how settled some other family's promise is. The single memo this replaced was locked by VoiceTool's
+ * mount effect to whatever family the app booted on, which made controller.ts's per-take `await
+ * fit.warmFonts(style.fontFamily)` a no-op for every other font the founder could pick.
+ */
+describe("warmFonts caches per font family", () => {
+  it("hands the same settled promise back for the same family", () => {
+    expect(fit.warmFonts(5)).toBe(fit.warmFonts(5));
+  });
+
+  it("warms a family it has not seen, even after another one has been warmed", () => {
+    const boot = fit.warmFonts(5);
+
+    expect(fit.warmFonts(8)).not.toBe(boot);
+    expect(fit.warmFonts(6)).not.toBe(boot);
+    // ...and each of those is itself cached from then on.
+    expect(fit.warmFonts(8)).toBe(fit.warmFonts(8));
+  });
+
+  it("treats the default the same as an explicit family 5, so the boot call is not a second entry", () => {
+    expect(fit.warmFonts()).toBe(fit.warmFonts(5));
+  });
+});

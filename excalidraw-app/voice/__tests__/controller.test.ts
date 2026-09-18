@@ -1631,3 +1631,72 @@ describe("R5b — a preview leaving a region that already has words", () => {
     ).toBe(1);
   });
 });
+
+/**
+ * dispose() used to abort the network and the timers and leave the CANVAS exactly as the interrupted take had
+ * drawn it: a dashed marker, a "·" placeholder, maybe a 45 % interim preview. On 0.1.0 that was survivable —
+ * the only reader of that litter was the same browser's own localStorage, swept on the next boot. In a shared
+ * room it is everyone's: Collab's beforeUnload deliberately SAVES the scene on the way out, so a tab closed
+ * mid-take wrote the ghost into /api/rooms for every future joiner.
+ */
+describe("dispose() takes its own scaffolding off the canvas with it", () => {
+  it("tombstones the pending marker and placeholder, and does not touch the committed words", async () => {
+    const h = harness();
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // A take that finished: its transcript is the only copy the founder has of that sentence.
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 5000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 3200 });
+    await until(() => h.status().completed === 1, 3000);
+
+    // A second region, drawn and not yet spoken into: marker + placeholder, i.e. what a tab that goes away
+    // mid-take leaves behind. (The first take's marker left with its own commit.)
+    h.capture.clock = 6000;
+    await h.stroke("ink-b");
+    const pendingMarker = h.api.elements.find(
+      (e) => e.type === "rectangle" && !e.isDeleted,
+    )!;
+    const pendingText = h.api.elements.find(
+      (e) => e.containerId === pendingMarker.id,
+    )!;
+    expect(pendingText.text, "the region is still showing its dot").toBe("·");
+
+    h.controller.dispose();
+
+    expect(h.api.find(pendingMarker.id)!.isDeleted).toBe(true);
+    expect(h.api.find(pendingText.id)!.isDeleted).toBe(true);
+    const committed = h.api.elements.find((e) => e.text === SENTENCE)!;
+    expect(
+      committed.isDeleted,
+      "a teardown is not allowed to eat words that landed",
+    ).toBe(false);
+    // The founder did not do this, so it must not be a checkpoint on their undo stack.
+    expect(h.api.writes[h.api.writes.length - 1]!.captureUpdate).toBe("NEVER");
+  });
+
+  it("writes nothing at all when the canvas is already clean", async () => {
+    const h = harness();
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 5000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 3200 });
+    await until(() => h.status().completed === 1, 3000);
+
+    const before = h.api.writes.length;
+    h.controller.dispose();
+    h.controller.dispose(); // idempotent: the second call is a no-op, not a second sweep
+
+    expect(h.api.writes.length).toBe(before);
+  });
+});

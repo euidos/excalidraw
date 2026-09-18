@@ -19,14 +19,17 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { MainMenu } from "@excalidraw/excalidraw";
+
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
 import { assignUtterance } from "./assign";
+import { isVoiceEnabled } from "./enabled";
 import { createVoiceCapture } from "./capture";
 import { createVoiceController } from "./controller";
 import { fit } from "./fit";
 import { loadSettings, saveSettings, subscribe } from "./settings";
-import { SettingsPanel } from "./settings-panel";
+import { SettingsPanel, voiceSettingsIcon } from "./settings-panel";
 import { recognizeStroke } from "./stroke";
 import { checkHealth, transcribe } from "./stt";
 import { mountVoiceToolbarButton } from "./toolbar";
@@ -67,7 +70,34 @@ function isPanelInput(target: EventTarget | null): boolean {
   );
 }
 
-export const VoiceTool = ({
+/**
+ * The "Voice settings…" main-menu entry, owned here rather than spelled out in the app's AppMainMenu.tsx: the
+ * icon and the panel store both live in this module, so upstream's file costs one import and one element.
+ *
+ * `MainMenu.Item` is `DropdownMenu.Item`, and MainMenu only introspects its own children for the Trigger and the
+ * Content components — items are rendered straight through — so wrapping one in a component is safe.
+ */
+export const VoiceSettingsMenuItem = () => {
+  if (!isVoiceEnabled()) {
+    return null;
+  }
+  return (
+    <MainMenu.Item
+      icon={voiceSettingsIcon}
+      data-testid="menu-voice-settings"
+      onSelect={() => openVoiceSettings()}
+    >
+      Voice settings…
+    </MainMenu.Item>
+  );
+};
+
+/** Kill switch at the boundary, so the component below never has to reason about conditional hooks. */
+export const VoiceTool = (props: {
+  excalidrawAPI: ExcalidrawImperativeAPI | null;
+}) => (isVoiceEnabled() ? <VoiceToolImpl {...props} /> : null);
+
+const VoiceToolImpl = ({
   excalidrawAPI,
 }: {
   excalidrawAPI: ExcalidrawImperativeAPI | null;

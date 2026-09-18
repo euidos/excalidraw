@@ -1261,11 +1261,20 @@ function buildFreeText(
  * transcript spilling out of a region whose marker the commit has just deleted. `document.fonts.ready` alone is not
  * enough — the library only registers/loads its webfont when text is first MEASURED, so awaiting `ready` before any
  * measurement resolves immediately and the first real fit is still a fallback fit. So: measure once, then await.
- * Cached, so every later caller gets the same settled promise (the controller awaits it before it arms).
+ *
+ * Cached PER FAMILY, and that "per family" is load-bearing. A single memo would be settled by the first caller
+ * (VoiceTool's mount effect, with whatever family the app booted on) and every later call — including
+ * controller.ts's `await fit.warmFonts(style.fontFamily)`, the one that is supposed to guarantee the invariant for
+ * each take — would resolve instantly for a family that has never been measured, which is exactly the fallback fit
+ * this function exists to prevent. Switch the font, draw a region, speak: the first transcript overflows.
  */
-let fontsWarm: Promise<void> | null = null;
+const fontsWarm = new Map<number, Promise<void>>();
 function warmFonts(fontFamily = 5): Promise<void> {
-  return (fontsWarm ??= (async (): Promise<void> => {
+  const cached = fontsWarm.get(fontFamily);
+  if (cached) {
+    return cached;
+  }
+  const warming = (async (): Promise<void> => {
     try {
       measureOnly("font warm up", 20, fontFamily);
       await document.fonts?.ready;
@@ -1275,7 +1284,9 @@ function warmFonts(fontFamily = 5): Promise<void> {
         err,
       );
     }
-  })());
+  })();
+  fontsWarm.set(fontFamily, warming);
+  return warming;
 }
 
 export const fit: FitModule & { measureOnly: typeof measureOnly } = {

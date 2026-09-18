@@ -4,6 +4,9 @@
  */
 import { createStore, entries, set as idbSet } from "idb-keyval";
 
+import { newElementWith } from "@excalidraw/element/mutateElement";
+
+import type { ElementUpdate } from "@excalidraw/element/mutateElement";
 import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 import type {
@@ -102,8 +105,36 @@ const containerIdOf = (el: ExcalidrawElement): string | null => {
  * Pure so it can be unit-tested without the library's restore pipeline. Returns a NEW array; only the touched
  * elements are replaced (shallow copies), the rest are passed through.
  */
+/**
+ * Scaffolding a take rewrites while it runs: the placeholder animates three times a second and an interim preview
+ * is rewritten on every slice, so `element.updated` is a working heartbeat with no new protocol behind it.
+ * Anything stamped and fresher than this is assumed to belong to a take that is STILL RUNNING — on some OTHER
+ * client, which is a case 0.1.0 could not have (see `SweepOptions.keepRecentMs`). Two STT timeouts wide.
+ */
+export const LIVE_SCAFFOLDING_MS = 30_000;
+
+export type SweepOptions = {
+  /**
+   * Leave scaffolding whose `updated` stamp is newer than this alone.
+   *
+   * 0 (the default) sweeps everything, which is what a LOCAL load path wants: this browser is the only client
+   * that could have been speaking, and the take that made this litter died with the tab.
+   *
+   * The COLLAB load path must pass `LIVE_SCAFFOLDING_MS`. There the scene belongs to everyone: an armed peer's
+   * marker and "\u00b7" placeholder are on the canvas and already persisted by their ~14 s save, and the sweep
+   * cannot tell them from a dead ghost by stamp alone. Deleting them is not cosmetic — the tombstone now
+   * propagates (see below), the speaker's own controller finds its text gone, and controller.ts's
+   * "the user deleted the shape while we were transcribing" branch drops the transcript SILENTLY. A ghost that
+   * outlives the join by 30 s is a nuisance; a sentence deleted out from under someone mid-word is not.
+   */
+  keepRecentMs?: number;
+  /** Test seam for the clock. */
+  now?: number;
+};
+
 export function sweepGhostPlaceholders<T extends ExcalidrawElement>(
   elements: readonly T[],
+  options: SweepOptions = {},
 ): T[] {
   const byId = new Map<string, T>();
   for (const el of elements) {
@@ -165,28 +196,74 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(
     }
   }
 
+  // A take that is still running somewhere is spared, whole. Grouping by the marker matters: a long utterance
+  // leaves the MARKER untouched from pen-up onwards, and only the placeholder (or the interim preview) bound to it
+  // keeps ticking — judging each element on its own `updated` would delete the live marker out from under it.
+  const keepRecentMs = options.keepRecentMs ?? 0;
+  if (keepRecentMs > 0 && deleted.size) {
+    const cutoff = (options.now ?? Date.now()) - keepRecentMs;
+    const groupOf = (el: T): string => containerIdOf(el) ?? el.id;
+    const live = new Set<string>();
+    for (const el of elements) {
+      if (deleted.has(el.id) && el.updated > cutoff) {
+        live.add(groupOf(el));
+      }
+    }
+    if (live.size) {
+      for (const el of elements) {
+        if (deleted.has(el.id) && live.has(groupOf(el))) {
+          deleted.delete(el.id);
+        }
+      }
+      // An unbind is only ever the other half of a deletion: a ghost that survived must stay bound to its
+      // container, and that container's dashed "pending" stroke is still telling the truth.
+      for (const [containerId, ids] of [...unbind]) {
+        for (const id of [...ids]) {
+          if (!deleted.has(id)) {
+            ids.delete(id);
+          }
+        }
+        if (!ids.size) {
+          unbind.delete(containerId);
+        }
+      }
+    }
+  }
+
   if (!deleted.size && !unbind.size) {
     return elements.slice();
   }
 
   return elements.map((el) => {
     if (deleted.has(el.id)) {
-      return { ...el, isDeleted: true };
+      // NOT `{ ...el, isDeleted: true }`. A shallow copy keeps `version`, `versionNonce` and `updated`, and in a
+      // SHARED room that makes the tombstone a canvas-local cosmetic:
+      //   - getSceneVersion is a plain sum of versions, so an unbumped sweep leaves the scene version unchanged.
+      //     Collab.broadcastElements only sends when that sum RISES, and isSavedToFirebase compares the same sum,
+      //     so neither the peers nor the backend would ever hear about the deletion.
+      //   - reconcile.ts's shouldDiscardRemoteElement breaks a version tie on
+      //     `local.versionNonce <= remote.versionNonce`. With the nonce copied verbatim, a peer that still holds
+      //     the element ALIVE discards our tombstone every time — and re-persists the ghost on its next save.
+      //   - isSyncableElement (excalidraw-app/data/index.ts) drops tombstones older than DELETED_ELEMENT_TIMEOUT
+      //     (24 h) from the PUT entirely, and a preserved `updated` is exactly how a ghost gets to be that old.
+      // newElementWith is the library's own bump — version + 1, a fresh nonce, a fresh `updated` — and it is what
+      // every other scene write in this tool already uses.
+      return newElementWith(el, { isDeleted: true } as ElementUpdate<T>);
     }
     const drop = unbind.get(el.id);
     if (!drop) {
       return el;
     }
     const bound = (el.boundElements ?? []).filter((b) => !drop.has(b.id));
-    const next: Record<string, unknown> = {
-      ...el,
+    const updates: Record<string, unknown> = {
       boundElements: bound.length ? bound : null,
     };
     // The dashed stroke is the "transcription pending" cue; with the placeholder gone it must not linger.
     if (el.strokeStyle === "dashed") {
-      next.strokeStyle = "solid";
+      updates.strokeStyle = "solid";
     }
-    return next as unknown as T;
+    // Same reasoning as the tombstone: unbinding a founder's shape is a real edit and has to win a reconcile.
+    return newElementWith(el, updates as ElementUpdate<T>);
   });
 }
 

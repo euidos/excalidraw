@@ -178,6 +178,12 @@ surface, fonts, mic) writes `/tmp/smoke.png`.
 **The hosted board** is the live target: `fleet-infra/scripts/deploy-whiteboard.sh <ref>` builds the fork and
 ships the bundle + the storage image to euidos-internal. Nothing in this directory deploys it.
 
+**Kill switch.** Build with `VITE_APP_ENABLE_VOICE=false` and the tool is gone: no toolbar button, no main-menu
+entry, no microphone prompt, no `window.__excalidrawVoice`. Fail-open — only that exact string disables it, so
+the e2e suite, the kiosk build and `yarn start` (none of which set it) are unaffected. It exists for the same
+reason `VITE_APP_ENABLE_PWA` and `VITE_APP_ENABLE_TRACKING` do: a fork-only surface that a bad rebase against
+upstream's toolbar markup, or an origin where nobody speaks, should be able to switch off without a code change.
+
 **The wall kiosk (LEGACY, frozen).** Everything from here to the end of "Probing the live kiosk" describes the
 static path that shipped `whiteboard/dist` to `root@100.102.3.47`. `whiteboard/` no longer exists, so
 `euidos/scripts/kiosk/deploy-static.sh` cannot run as written and **must not be run**: the kiosk keeps serving its

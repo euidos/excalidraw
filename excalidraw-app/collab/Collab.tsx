@@ -88,7 +88,7 @@ import {
   saveUsernameToLocalStorage,
 } from "../data/localStorage";
 import { resetBrowserStateVersions } from "../data/tabSync";
-import { sweepGhostPlaceholders } from "../voice/persist";
+import { LIVE_SCAFFOLDING_MS, sweepGhostPlaceholders } from "../voice/persist";
 
 import { collabErrorIndicatorAtom } from "./CollabError";
 import Portal from "./Portal";
@@ -343,6 +343,13 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         this.portal,
         syncableElements,
         this.excalidrawAPI.getAppState(),
+        // Re-read on a 409 retry rather than re-merging the clone above: see saveToFirebase's own note.
+        () =>
+          cloneJSON(
+            getSyncableElements(
+              this.excalidrawAPI.getSceneElementsIncludingDeleted(),
+            ),
+          ),
       );
 
       this.resetErrorIndicator();
@@ -769,14 +776,24 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         // mutates now, and a persisted ghost outlives the session that made it (collab-plan phase 2 / G-P2.2).
         // Deliberately NOT in _reconcileElements: that is the per-frame remote path, where a peer watching
         // someone else's live interim preview is the intended behaviour.
-        const elements = stored && sweepGhostPlaceholders(stored);
-        if (elements) {
+        //
+        // `keepRecentMs` is what makes the sweep safe in a room rather than only in a reload: a peer may be
+        // speaking into that scaffolding right now, and their take's placeholder is still ticking. See
+        // voice/persist.ts SweepOptions.
+        if (stored) {
+          // The watermark is taken from the PRE-sweep array ON PURPOSE. broadcastElements only sends when
+          // getSceneVersion RISES above it, so watermarking the SWEPT scene would make the sweep a canvas-local
+          // cosmetic: the tombstones would never leave this tab and the peer that still holds the ghost alive
+          // would re-persist it on its next save. Watermarking the stored scene makes the sweep count as a local
+          // change, so it is broadcast and saved like any other edit.
           this.setLastBroadcastedOrReceivedSceneVersion(
-            getSceneVersion(elements),
+            getSceneVersion(stored),
           );
 
           return {
-            elements,
+            elements: sweepGhostPlaceholders(stored, {
+              keepRecentMs: LIVE_SCAFFOLDING_MS,
+            }),
             scrollToContent: true,
           };
         }

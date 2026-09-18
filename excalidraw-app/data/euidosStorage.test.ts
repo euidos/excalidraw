@@ -224,6 +224,48 @@ describe("euidosStorage — scenes", () => {
     expect(isSavedToFirebase(portal(), local)).toBe(false);
   });
 
+  it("re-reads the LIVE scene before a retry instead of re-merging the stale snapshot", async () => {
+    // The voice tool rewrites one element IN PLACE: the interim preview and the final transcript share an id, and
+    // only `text`/`opacity`/`customData` change. So "the snapshot the save began with" and "what the canvas shows
+    // now" can be the same element in two different states, and a 409 decides which one is persisted.
+    const preview = [
+      element({ id: "words", x: 1, version: 3, opacity: 45 }),
+    ] as any[];
+    const committed = [
+      element({ id: "words", x: 1, version: 4, opacity: 100 }),
+    ] as any[];
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 1 }))
+      .mockResolvedValueOnce(jsonResponse(409, { error: "conflict" }))
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 2 }))
+      .mockResolvedValueOnce(jsonResponse(200, { version: 3 }));
+
+    await saveToFirebase(
+      portal(),
+      preview as SyncableExcalidrawElement[],
+      appState,
+      () => committed as SyncableExcalidrawElement[],
+    );
+
+    expect(putBody(calls()[1]).elements[0].opacity).toBe(45);
+    // The retry must carry the words as they are NOW, not the preview the save set out with.
+    expect(putBody(calls()[3]).elements[0].opacity).toBe(100);
+  });
+
+  it("still works for a caller that passes no live-scene reader", async () => {
+    const local = [element({ id: "mine", x: 1, version: 3 })];
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 1 }))
+      .mockResolvedValueOnce(jsonResponse(409, { error: "conflict" }))
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 2 }))
+      .mockResolvedValueOnce(jsonResponse(200, { version: 3 }));
+
+    await saveToFirebase(portal(), local, appState);
+
+    expect(putBody(calls()[3]).elements[0].id).toBe("mine");
+  });
+
   it("gives up after repeated conflicts instead of looping forever", async () => {
     const local = [element({ id: "el-1" })];
     fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>

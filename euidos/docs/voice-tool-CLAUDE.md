@@ -42,7 +42,7 @@ way — the fork merges upstream, so every edited upstream line is a future conf
 Run everything from the fork root; it is a yarn 1.22.22 workspace (`corepack enable`).
 
 ```sh
-yarn vitest run excalidraw-app/voice   # 179 unit tests (jsdom). NEVER run the whole upstream suite.
+yarn vitest run excalidraw-app/voice   # 194 unit tests (jsdom). NEVER run the whole upstream suite.
 yarn test:typecheck                    # tsc over the monorepo
 npx eslint --max-warnings=0 --ext .ts,.tsx excalidraw-app/voice
 euidos/scripts/build-app.sh            # → excalidraw-app/build/
@@ -135,14 +135,16 @@ reverted if the final assignment picks a different region. Measured on the real 
 | `voice/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `voice/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
 | `voice/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. Round 5: `transcribeUtterance` (send at utterance end) and `runAssignment` (choose the region) both end at `settle`; `sendInterim`/`scheduleInterim`/`showInterim` drive the previews and `renderEntry` derives a region's appearance from its own state (parts → interim previews → placeholder), writing words with `IMMEDIATELY` only when they actually change. Round 5b: the pen-down barrier is per utterance, and a resolved utterance's WAV is released (only the `failed` map keeps audio). DOM-free. |
-| `voice/persist.ts` | — | In THIS app only `sweepGhostPlaceholders` is wired (both load paths); the vanilla-storage half (`createPersister`, `loadInitialData`, `libraryAdapter`) is dead weight the app must never call, kept because narrowing a contract is a design decision. `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. |
+| `voice/persist.ts` | — | In THIS app only `sweepGhostPlaceholders` is wired (both load paths); the vanilla-storage half (`createPersister`, `loadInitialData`, `libraryAdapter`) is dead weight the app must never call, kept because narrowing a contract is a design decision. `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. Every deletion and every unbind goes through `newElementWith`, so it is a real versioned edit — see the reconciler invariant below. `SweepOptions.keepRecentMs` (`LIVE_SCAFFOLDING_MS`, 30 s) is passed by the COLLAB call site only: it spares a take whose scaffolding is still beating. |
 | `voice/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
 | `voice/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, interim interval, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
 | `voice/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. The glyph IS the level meter: `buttonVisualState` (pure, unit-tested) maps the status to `--voice-level` through `level.ts` plus the `voice-tool--armed/--recording/--speaking/--mic-missing` classes, and voice.css clips the capsule's fill to that level. |
-| `voice/VoiceTool.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the settings panel, `window.__excalidrawVoice`. The menu entry is one item in the app's own `AppMainMenu`, reached through `openVoiceSettings()`. |
+| `voice/VoiceTool.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the settings panel, `window.__excalidrawVoice`. Also exports `VoiceSettingsMenuItem`, the whole of the main-menu entry, so upstream's `AppMainMenu.tsx` costs one import and one element. |
+| `voice/index.ts` | — | The public surface, and the ONLY path upstream files import (`sweepGhostPlaceholders`, `VoiceTool`, `VoiceSettingsMenuItem`, `isVoiceEnabled`). One import line per touchpoint = one conflict hunk per touchpoint on a rebase. `collab/Collab.tsx` reaches `../voice/persist` directly: it wants the pure sweep and has no business pulling React in. |
+| `voice/enabled.ts` | — | `isVoiceEnabled()` — the fork's kill switch, `VITE_APP_ENABLE_VOICE`. FAIL-OPEN: only the literal `"false"` turns the tool off, so the e2e, the kiosk build and `yarn start` are unaffected. It gates both the mount and the menu item. |
 | `voice/voice.css` | — | Styles for the injected buttons, the mic glyph's level fill/ring (22 px: the library forces 16 px on toolbar SVGs), the panel (top-LEFT, under the main menu, offset clear of the shape-properties island) and the level meter. Every library variable used by the PANEL carries a literal fallback, because the panel renders outside the `.excalidraw` subtree where `--color-*` do not exist. |
 | `euidos/scripts/kiosk/` | — | `deploy-static.sh` (LEGACY), `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs`, and `stt-abort-check.mjs` (round 5: fires a real Chromium fetch at the STT server and aborts it while it is queued, then checks `/health.skipped` — the proof that an abandoned interim slice costs no GPU time). |
-| `voice/__tests__`, `euidos/e2e/voice` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, settings, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
+| `voice/__tests__`, `euidos/e2e/voice` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, collab-sweep, enabled, settings, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job; `collab-sweep` runs the REAL `reconcileElements`). Playwright against the real STT server with Chromium's fake mic. |
 
 ## Invariants
 
@@ -169,6 +171,28 @@ reverted if the final assignment picks a different region. Measured on the real 
   elements.
 - **Never hold element objects across frames.** Look them up by id (`getSceneElementsIncludingDeleted`) when you
   need them; a transcript can land after the user moved, edited or deleted the shape.
+- **The scene is SHARED: a delete has to win a reconcile, not just stop being drawn.** In 0.1.0 the only reader of
+  a deletion was the same browser. Now `reconcileElements` decides between our copy and a peer's, and it breaks a
+  version tie on `local.versionNonce <= remote.versionNonce` — so a shallow `{ ...el, isDeleted: true }` (same
+  version, same nonce) is discarded by every peer still holding the element alive, and `getSceneVersion` (a plain
+  sum of versions) does not even rise, so Collab never broadcasts it and `isSavedToFirebase` calls the scene
+  already saved. A preserved `updated` is worse again: `isSyncableElement` strips tombstones older than 24 h out of
+  the PUT entirely. Every scene write in this tool therefore goes through `newElementWith`, the sweep included, and
+  `Collab.initializeRoom` takes its broadcast watermark from the PRE-sweep array so the sweep counts as a local
+  change. Gates: `voice/__tests__/collab-sweep.test.ts`, which runs the real reconciler in both argument orders.
+- **The sweep may not delete a take someone is still speaking into.** The stamps cannot tell a dead ghost from a
+  live one, and with the bump above a wrong delete actually propagates: the speaker's controller then finds its
+  text gone and takes the "the user deleted the shape while we were transcribing" branch, dropping the sentence
+  with no ⚠ and no toast. `element.updated` is the heartbeat (the placeholder animates ~3x/s, the interim preview
+  is rewritten every slice) and `keepRecentMs` is the rule, grouped by marker so a long utterance's untouched
+  marker is kept alive by its ticking placeholder. The LOCAL load path passes nothing and sweeps everything —
+  there, this browser is the only client that could have been speaking, and it just reloaded.
+- **`dispose()` owns the canvas it drew on, but a tab CLOSE does not reach it.** Disposing runs the same sweep
+  over the live scene (`CaptureUpdateAction.NEVER` — a teardown is not the founder's undo checkpoint), so a clean
+  unmount leaves nothing behind. A real tab close is NOT winnable: `Collab` registers its `beforeunload` in its
+  constructor, before this component exists, and clones the scene synchronously there, so no later listener can
+  clean up first — and that handler deliberately saves the room on the way out. That case is the load-path
+  sweep's job, which is the reason the tombstones it writes must be broadcastable.
 - **The drawn shape is a region marker, not a drawing.** Every marker carries `customData.voiceRegion` (it
   survives storage) and is deleted the moment the text lands — including a shape the founder drew with a native tool
   while armed. Only a FAILED take keeps its marker, dashed, so the retry button has a visible target.
@@ -298,6 +322,7 @@ is frozen until the founder approves the cutover** — read from it, never write
 - Do not leave a module in `voice/` that nothing imports, or a contract nothing implements; two contradicting
   contracts is how round 1 shipped the wrong segmenter. (Open decision carried from the port: `persist.ts` still
   exports `createPersister` / `loadInitialData` / `libraryAdapter`, which this app must never call.)
+- Do not delete a shared-scene element with a shallow `{ ...el, isDeleted: true }`. See the reconciler invariant.
 - Do not claim a gate is met from a mocked run, a unit test, a build that was never loaded in a browser, or a
   parameter chosen from a builder's report instead of the declared operating envelope.
 
