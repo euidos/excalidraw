@@ -130,6 +130,31 @@ proof the deployed server is the one this round wrote.
 | Server deploy | back up, scp, restart, warm, prove | **met, with an incident** | `server.py.bak3` (7893 bytes) taken before the first copy. The first restart left the server **down**: `schtasks /End` + `/Run` raced the old process's socket, uvicorn logged `[Errno 10048]` and called `sys.exit(1)` — which the `except OSError:` retry loop could never catch, so the task simply exited (log at 13:05). Recovered by a second `/Run`, then fixed in the code (`except (OSError, SystemExit)`, 12 bounded attempts) and redeployed. Total outage ~10 minutes, on a dev-only service, with no QA running. |
 | Unit gates | the seams no browser can reach | **met** | `test/unit/controller.test.ts`: transcription dispatched at utterance end with the pen down (`transcribe` called before pointer-up, `pending: 1`, `completed: 0`); `settle` idempotent and order-independent (assignment-first case, then a disarm that calls it again — `completed` stays 1, one text, one request); a failure that arrives before the assignment lands as ⚠ on the final region and the retry recovers it; interim slices aborted at utterance end; a slice answering after the final transcript is ignored; the provisional region reverted to its placeholder. Plus the G5c/N2d discriminator pair (`liveTargets`). `test/unit/fit.test.ts`: `commitInterim` fits like a commit, keeps the marker, dims and stamps; `resetPlaceholder` restores the dot, the binding and the size; the line-region variants. `test/unit/persist.test.ts`: an interim preview and its marker are swept on reload, bound or free. `test/unit/settings.test.ts`: `interimMs` clamped. |
 
+### Round 5b (review fixes, 2026-09-18)
+
+`npm run build` clean, `npm test` **172/172** (12 files, was 165), `npm run e2e` **27/27**, `retries: 0`
+(`test-results/last-run.txt`, ends `27 passed (3.2m)`), with `curl -s http://100.81.33.83:8770/health` →
+`{"ok":true,"model":"large-v3-turbo","warm":true,"skipped":1}` taken immediately before it. The run printed
+`[R5a] pen-up -> words: 80 ms | STT round trip: 1583 ms`, so the per-utterance barrier did not cost the round's
+headline number.
+
+**One flake, named:** the e2e was run three times on this tree (a flake is a failure, RETRO N8). Runs 1 and 3 were
+27/27; run 2 failed only `toolbar latch: tapping the voice tool arms and disarms it, and the glyph shows what the mic
+hears`, which then passed **3× in isolation** (`npx playwright test -g "toolbar latch"`, 6.9–7.0 s each). Its trace
+was lost because a later run wiped `test-results/artifacts`, so the failing assertion was NOT captured — the honest
+status of that gate on this tree is "green twice, unexplained red once". It asserts a level/`speaking` transition
+driven by the fake mic's timing and touches nothing round 5b changed; it is the row a round-6 pass should re-run
+with the trace kept.
+
+| Gate | Proof required | Status | Proof path / note |
+| --- | --- | --- | --- |
+| G17 failure after a preview | a take that fails after its preview landed reports it in the region | **met (unit, both layers)** | `test/unit/fit.test.ts` "DOES write over an interim preview…" and `test/unit/controller.test.ts` "writes the ⚠ over the preview…": ⚠ STT, `voiceFailed` stamped, `voiceInterim` cleared, opacity 100, marker still dashed. Each was run against the pre-fix code and fails there (`expected 'Ship the' to be '⚠ STT'`). The harness's fake `markFailed` now carries the real `hasLandedTranscript` guard — its absence is the single reason the shipped 165-test suite could not see this. |
+| G18 erased mid-preview | a region erased while its own preview is up drops silently | **met (unit)** | `test/unit/controller.test.ts` "drops the words silently even though the preview's re-render pruned the entry" — `orphans 0`, `completed 0`, no text on the canvas. Fails on the pre-fix guard (`expected 1 to be +0`). |
+| G19 region created after the audio was sent | erasing it still drops silently (speak-while-drawing) | **met (unit)** | "drops a region created AFTER the audio was sent and erased before the answer came back". Fails with `noteLiveTarget` removed (`expected 1 to be +0`). |
+| G20 barrier is per utterance | an utterance no open stroke could claim settles while that stroke is open | **met (unit)** | "settles an utterance no open stroke could claim…" (pen-down at onset+1800 against a 1500 ms pre-roll: `completed 1` with no pen-up) plus the companion "still waits for a stroke whose pointer-down IS inside the window (gate N2e)". The first fails with the session-wide barrier restored (`condition never became true`); N2e itself and the e2e R5a/N6b gates cover the other side. |
+| G21 no undo step for an unchanged re-render | a preview leaving a committed region writes the words with NEVER | **met (unit)** | "re-renders it as cosmetic churn…": exactly one `IMMEDIATELY` write carrying the transcript; two with the fix reverted. The fake API now records each write's `captureUpdate`. |
+| WAV release | a resolved take stops holding its audio | **accepted, not directly gated — owner: main loop, re-decide round 6** | `settle`'s `finish()` drops `u.stt.blob` and the `utteranceSession` entry; nothing on the surface can observe a freed Blob, so what is gated is that the RETRY path still works after settle (`test/unit/controller.test.ts` "a failure that arrives before the assignment lands as ⚠ STT on the final region, and retries", which now retries from the `failed` map's own reference). A kiosk-side memory measurement was not taken. |
+
 ### Open rows added by round 5
 
 | Item | Status | Note |
@@ -138,3 +163,10 @@ proof the deployed server is the one this round wrote.
 | `status.pending` excludes interim slices | **accepted, documented** | Deliberate: `pending` is what the badge counts and what the e2e's `settled()` waits on, and interim work is cosmetic. The server-side sink for abandoned slices is `/health.skipped`; there is no client-side counter for slices sent. |
 | The suite's fixture clock | **unmet — owner: main loop** | `helpers.launchWithClip` documents "the clip starts at the arm", and that is right — but the VAD's floor seeding (open row above) means a clip whose speech starts at 120 ms loses its first seconds anyway (measured: 5.4 s of `ko-long.wav` arriving as one 0.5 s utterance). Round 5 works around it with `helpers.ensureLeadInClip`, which prepends silence into git-ignored `test-results/fixtures/`. The real fix is the floor-seeding row (`vad.ts`, percentile of the first N frames), after which the lead-in helper should be deleted rather than kept. |
 | Kiosk not re-probed for round 5 | **unmet — owner: main loop** | Nothing in this round was deployed to the whiteboard (`100.102.3.47`): the main loop owns deploys. The interim preview's legibility at wall distance (45 % opacity on a bright panel) is exactly the kind of thing the round-4 persona lens existed to catch and has NOT been looked at on the wall. |
+
+### Open rows added by round 5b
+
+| Item | Status | Note |
+| --- | --- | --- |
+| Interim previews are BOUND to the marker | **accepted, not tested — owner: main loop, re-decide round 6** | `fit.commitInterim` keeps `containerId` on the founder's marker and copies the probe's layout, so a transcript that does not fit even at `minFontSize` could in principle make the library grow the shape they drew, mid-take. Not reproduced: fit's unit environment fakes the layout and the R5b e2e used a region the sentence fitted in. The clean fix (preview as free text, marker's `boundElements` untouched) requires unbinding at preview time and rebinding in `resetPlaceholder` — a decision, not a patch, so round 5b left it alone rather than shipping the one-sided pair `commitInterim` already warns about. |
+| Regions swept by the DISARM while a take is in flight | **accepted, documented** | `settle`'s erased-mid-take rule now also fires when the entry was pruned by the disarm's unspoken sweep rather than by the founder (a closed, empty region whose late utterance arrives afterwards): those words are dropped instead of orphaned. Consistent with the round-5 behaviour for the same case when the entry survived, and the sweep already toasts. Not exercised by a gate. |

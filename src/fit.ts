@@ -33,7 +33,12 @@ import type {
   FontFamilyValues,
   StrokeStyle,
 } from "@excalidraw/excalidraw/element/types";
-import { VOICE_FAILED_CUSTOM_DATA, VOICE_INTERIM_CUSTOM_DATA, VOICE_REGION_CUSTOM_DATA } from "./contracts";
+import {
+  VOICE_FAILED_CUSTOM_DATA,
+  VOICE_INTERIM_CUSTOM_DATA,
+  VOICE_REGION_CUSTOM_DATA,
+  isInterimText,
+} from "./contracts";
 import type {
   FitModule,
   FitOptions,
@@ -227,11 +232,17 @@ function textCustomData(
 /**
  * Does this text already carry words the founder said? A LATER failure may never overwrite them (round 4c): the
  * committed transcript lives only on the canvas, so writing "⚠ STT" over it destroyed it for good once the page
- * reloaded. A placeholder dot, an empty text or an earlier warning are all fair game.
+ * reloaded. A placeholder dot, an empty text, an earlier warning and an INTERIM PREVIEW are all fair game.
+ *
+ * The preview is words, but it is not a copy of anything: it is this take's own cosmetic guess, `persist.ts`
+ * deletes it on the next reload, and the take it belongs to is the one that just failed. Before round 5b a final
+ * transcript that failed after a preview had landed was reported NOWHERE — markFailed returned [] and the region
+ * kept half a sentence at 45 % that no later path could take back (the entry is `failed`, so renderEntry, the
+ * animation tick and the disarm sweep all leave it alone).
  */
 function hasLandedTranscript(text: ExcalidrawTextElement): boolean {
   const content = String(text.originalText ?? text.text ?? "").trim();
-  if (!content) {
+  if (!content || isInterimText(text)) {
     return false;
   }
   return !PLACEHOLDER_FRAMES.includes(content as (typeof PLACEHOLDER_FRAMES)[number]) &&

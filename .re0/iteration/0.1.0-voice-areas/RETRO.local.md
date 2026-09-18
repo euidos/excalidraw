@@ -408,6 +408,21 @@ New in round 4:
   "penUp + sttLatency" would have been proof by construction (round-1 vocabulary) and would also have been wrong by
   the conversion time.
 
+- **L19 — a fake that omits the guard it is standing in for hides the defect that guard causes (round 5b).** The
+  controller harness's fake `fit.markFailed` always wrote "⚠ STT"; the real one returns `[]` when the text carries
+  words. That one missing line is the entire reason 165 green tests could not see a failure channel that reported
+  nothing at all after an interim preview had landed. Rule: when a fake stands in for a module whose contract is a
+  REFUSAL, the refusal is the part that has to be faithful — the happy path is the cheap half.
+- **L20 — a barrier is a claim about which facts could still change, so it has to be as narrow as that claim
+  (round 5b).** The N2e flush barrier was written per SESSION ("a stroke is open, hold everything") when assign.ts's
+  rule is per utterance (`downMs ≤ onsetMs + preRoll`). The over-broad version was invisible in tests and cost the
+  founder the whole duration of the next stroke on the wall — the same latency the round had just removed.
+- **L21 — a guard may only rest on facts that pruning cannot take away (round 5b).** `settle`'s "the founder erased
+  this region" test looked the entry up in `owner.targets`, and `renderEntry` deletes exactly that entry (plus its
+  stroke record) whenever a preview outlives its region. The guard then short-circuited and the sentence was dumped
+  where the box had been. Rule: for a decision made after an async round trip, write down the fact at the time it is
+  true (`previewTargets`, `liveTargets`) instead of re-deriving it from live bookkeeping.
+
 ### Vocabulary added in round 5
 
 - **provisional region** — `assign()`'s answer with `nowMs = now`, i.e. before `final`. Legitimate to RENDER into

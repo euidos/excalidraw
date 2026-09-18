@@ -133,7 +133,7 @@ vi.mock("@excalidraw/excalidraw", () => ({
   },
 }));
 
-import { isFailedWarning, isRegionMarker, type StrokeShape, type StyleSnapshot } from "../../src/contracts";
+import { isFailedWarning, isInterimText, isRegionMarker, type StrokeShape, type StyleSnapshot } from "../../src/contracts";
 import { fit } from "../../src/fit";
 import type { ExcalidrawElement, ExcalidrawTextElement } from "@excalidraw/excalidraw/element/types";
 
@@ -408,6 +408,22 @@ describe("failure keeps the marker, a discard keeps nothing", () => {
     );
     const failed = fit.markFailed(built.target, null, committed, style);
     expect(failed, "the transcript is the only copy there is: nothing may overwrite it").toHaveLength(0);
+  });
+
+  it("DOES write over an interim preview: the preview is this take's own guess, not a copy of anything", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    // A preview landed ("Ship the"), then the FINAL transcript of the same utterance failed. Until round 5b the
+    // words in the preview made hasLandedTranscript() true, markFailed returned [] and the failure was reported
+    // nowhere — the region kept half a sentence at 45 % that persist.ts deleted on the next reload.
+    const previewed = asText(
+      textOf(fit.commitInterim(built.target, asText(placeholder!), "Ship the", style, marker)) as unknown as ExcalidrawElement,
+    );
+    const failed = fit.markFailed(built.target, marker!, previewed, style);
+    const warning = textOf(failed);
+    expect(warning.text, "the founder is told the take failed, in the region they spoke into").toBe("⚠ STT");
+    expect(isFailedWarning(warning), "stamped, so a reload sweeps a warning and not a transcript").toBe(true);
+    expect(isInterimText(warning), "and the preview's own stamp is gone").toBe(false);
   });
 
   it("deletes BOTH halves when no speech ever landed", () => {

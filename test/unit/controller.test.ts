@@ -92,13 +92,16 @@ class FakeApi {
   };
   down: DownHandler | null = null;
   up: (() => void) | null = null;
+  /** Every scene write with the captureUpdate it carried: the undo-checkpoint rule is only visible here. */
+  writes: { captureUpdate: string; elements: El[] }[] = [];
 
   api(): ExcalidrawImperativeAPI {
     return {
       getSceneElements: () => this.elements.filter((e) => !e.isDeleted),
       getSceneElementsIncludingDeleted: () => this.elements,
-      updateScene: ({ elements }: { elements?: readonly El[] }) => {
+      updateScene: ({ elements, captureUpdate }: { elements?: readonly El[]; captureUpdate?: string }) => {
         if (elements) this.elements = [...elements];
+        this.writes.push({ captureUpdate: captureUpdate ?? "", elements: elements ? [...elements] : [] });
       },
       getAppState: () => this.appState as unknown as AppState,
       setActiveTool: () => undefined,
@@ -193,10 +196,29 @@ const fakeFit = (): FitModule => {
         { ...text, text: "·", originalText: "·", opacity: 100, customData: rest } as ExcalidrawTextElement,
       ];
     },
-    markFailed: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => [
-      ...(marker ? [marker] : []),
-      { ...text, text: "⚠ STT" } as ExcalidrawTextElement,
-    ],
+    markFailed: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => {
+      // The REAL guard (fit.ts hasLandedTranscript), which this fake omitted until round 5b: landed words are the
+      // only copy the founder has, so a later failure writes nothing over them — while a placeholder dot, an
+      // earlier ⚠ and an interim PREVIEW are all scaffolding a warning may replace. Without the guard here, the
+      // must-level defect of round 5 (a failure after a preview reported nothing at all) was invisible to the suite.
+      const content = String(text.originalText ?? text.text ?? "").trim();
+      const stamps = (text.customData ?? {}) as Record<string, unknown>;
+      const scaffolding =
+        content === "" || /^\u00b7{1,3}$/.test(content) || content.startsWith("⚠ STT") ||
+        stamps.voiceInterim === true;
+      if (!scaffolding) return [];
+      const { voiceInterim: _drop, ...rest } = stamps;
+      return [
+        ...(marker ? [marker] : []),
+        {
+          ...text,
+          text: "⚠ STT",
+          originalText: "⚠ STT",
+          opacity: 100,
+          customData: { ...rest, voiceFailed: true },
+        } as ExcalidrawTextElement,
+      ];
+    },
     discard: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => [
       { ...text, isDeleted: true } as ExcalidrawTextElement,
       ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
@@ -1008,5 +1030,236 @@ describe("R5 — a region that dies while the transcript is in flight", () => {
 
     await until(() => h.status().completed === 1, 2000);
     expect(h.status().orphans, "placed as free text where the pen last was").toBe(1);
+  });
+});
+
+/**
+ * Round 5b — the orderings round 5's two new side channels (the interim preview and `liveTargets`) opened, and the
+ * latency the pen-down barrier was still costing. Each case here was a live defect on 3a38b19.
+ */
+describe("R5b — the failure channel after a preview has landed", () => {
+  const OPEN_ONSET = 1000;
+
+  it("writes the ⚠ over the preview instead of leaving half a sentence nothing can take back", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    h.capture.clock = OPEN_ONSET + 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: OPEN_ONSET + 900 });
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer("Ship the");
+    await until(() => h.api.find(textA)!.text === "Ship the", 2000);
+    expect(h.api.find(textA)!.customData?.voiceInterim).toBe(true);
+
+    // The FINAL request fails. Before round 5b fit.markFailed refused to overwrite the preview (it is words), so
+    // the region kept "Ship the" at 45 % for ever: the entry is `failed`, so neither a later render, nor the
+    // animation tick, nor the disarm sweep ever touches it again — and the next reload swept the words silently.
+    h.capture.clock = OPEN_ONSET + 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: OPEN_ONSET + 900, endMs: OPEN_ONSET + 2500 });
+    await until(() => stt.calls.some((c) => !c.done), 2000);
+    stt.calls.at(-1)!.reject(new Error("STT server unreachable"));
+    await until(() => h.status().failed === 1, 3000);
+
+    const region = h.api.find(textA)!;
+    expect(region.text, "the failure is reported in the region the founder spoke into").toBe("⚠ STT");
+    expect(region.customData?.voiceInterim, "and the preview's stamp is gone").toBeUndefined();
+    expect(region.customData?.voiceFailed, "stamped so a reload sweeps the warning, not a transcript").toBe(true);
+    expect(region.opacity, "at full opacity: a report, not a guess").toBe(100);
+    expect(h.api.find(markerA)!.isDeleted, "the marker stays dashed so the retry has a visible target").toBe(false);
+  });
+});
+
+describe("R5b — a region erased while its own preview was up", () => {
+  const OPEN_ONSET = 1000;
+
+  it("drops the words silently even though the preview's re-render pruned the entry", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!;
+    const textA = h.api.elements.find((e) => e.containerId === markerA.id)!;
+
+    h.capture.clock = OPEN_ONSET + 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: OPEN_ONSET + 900 });
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer("Ship the");
+    await until(() => h.api.find(textA.id)!.text === "Ship the", 2000);
+
+    // One Ctrl+Z while the preview is up takes the region away (the preview itself is written with NEVER, so it is
+    // not its own undo step). The next slice then re-renders the region, which prunes the entry AND its stroke
+    // record — the assignment comes back null and the sentence used to be dumped where the box had just been.
+    h.api.elements = h.api.elements.map((e) =>
+      e.id === markerA.id || e.id === textA.id ? ({ ...e, isDeleted: true } as El) : e,
+    );
+    await until(() => stt.calls.length >= 2, 2000);
+    stt.calls[1]!.answer("Ship the voice");
+    await wait(40);
+
+    h.capture.clock = OPEN_ONSET + 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: OPEN_ONSET + 900, endMs: OPEN_ONSET + 2500 });
+    await until(() => stt.calls.some((c) => !c.done), 2000);
+    stt.calls.at(-1)!.answer(SENTENCE);
+    await wait(80);
+
+    expect(h.status().orphans, "nothing was placed where the founder had just erased a box").toBe(0);
+    expect(h.status().completed, "and nothing was written").toBe(0);
+    expect(h.api.elements.some((e) => !e.isDeleted && e.text === SENTENCE)).toBe(false);
+  });
+
+  it("drops a region created AFTER the audio was sent and erased before the answer came back", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 1500 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // Round 5's headline gesture: the pen is down and the label is spoken and FINISHED before pen-up, so the region
+    // that ends up owning the utterance does not exist when `liveTargets` is snapshotted.
+    h.capture.clock = 1000;
+    h.strokeDown("ink-a");
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 3100;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 3000 });
+    await until(() => stt.calls.length === 1, 2000);
+
+    await h.strokeUp("ink-a");
+    const marker = h.api.elements.find((e) => e.type === "rectangle")!;
+    const text = h.api.elements.find((e) => e.containerId === marker.id)!;
+    // The founder erases the box they just drew, with the words still in flight.
+    h.api.elements = h.api.elements.map((e) =>
+      e.id === marker.id || e.id === text.id ? ({ ...e, isDeleted: true } as El) : e,
+    );
+    stt.calls[0]!.answer(SENTENCE);
+    await wait(80);
+
+    expect(h.status().orphans, "their deletion is the answer, not an orphan at the pen origin").toBe(0);
+    expect(h.status().completed).toBe(0);
+    expect(h.api.elements.some((e) => !e.isDeleted && e.text === SENTENCE)).toBe(false);
+  });
+});
+
+describe("R5b — the pen-down barrier is per utterance, not per session", () => {
+  it("settles an utterance no open stroke could claim instead of waiting out the next stroke", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 1500 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+
+    // The founder starts the NEXT box at 3000 — outside this utterance's window (1200 + 1500), so assign.ts could
+    // never give these words to it — and is still drawing it when the sentence ends and the transcript comes back.
+    h.capture.clock = 3000;
+    h.strokeDown("ink-b");
+    h.capture.clock = 3100;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 3000 });
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer(SENTENCE);
+
+    // No pen-up for ink-b anywhere in this assertion: the words must not wait for a stroke that cannot claim them.
+    await until(() => h.status().completed === 1, 2000);
+    expect(h.api.find(textA)!.text, "and they landed in the region that did win them").toBe(SENTENCE);
+    expect(h.status().orphans).toBe(0);
+
+    await h.strokeUp("ink-b");
+  });
+
+  it("still waits for a stroke whose pointer-down IS inside the utterance's window (gate N2e)", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 1500 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1000 });
+    // Pen-down at 1200, inside 1000 + 1500: this stroke is a candidate and the words are its.
+    h.capture.clock = 1200;
+    h.strokeDown("ink-a");
+    h.capture.clock = 2800;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1000, endMs: 2700 });
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer(SENTENCE);
+    await wait(80);
+    expect(h.status().completed, "nothing is written while that stroke is open").toBe(0);
+    expect(h.status().orphans).toBe(0);
+
+    await h.strokeUp("ink-a");
+    await until(() => h.status().completed === 1, 2000);
+    const marker = h.api.elements.find((e) => e.type === "rectangle")!;
+    expect(h.api.find(marker.id)!.isDeleted, "the words landed in the region being drawn").toBe(true);
+    expect(h.status().orphans).toBe(0);
+  });
+});
+
+describe("R5b — a preview leaving a region that already has words", () => {
+  const OPEN_ONSET = 1000;
+
+  it("re-renders it as cosmetic churn, without a second undo checkpoint the founder did not cause", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    // Two takes previewing into the SAME region: ordinary on the wall (the VAD closes one while the founder keeps
+    // talking), and the reason take 2's preview later has to leave a region take 1 has committed into.
+    h.capture.clock = OPEN_ONSET + 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: OPEN_ONSET + 900 });
+    h.capture.onUtteranceStart?.({ id: 2, onsetMs: OPEN_ONSET + 950 });
+    await until(() => stt.calls.length >= 2, 2000);
+    stt.calls[0]!.answer("Ship the");
+    stt.calls[1]!.answer("and the wall");
+    await until(() => (h.api.find(textA)!.text ?? "").includes("and the wall"), 2000);
+    expect(h.api.find(textA)!.customData?.voiceInterim, "both previews are in that region").toBe(true);
+
+    // Take 1 closes and lands its words there.
+    const sentAt = stt.calls.length;
+    h.capture.clock = OPEN_ONSET + 2000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: OPEN_ONSET + 900, endMs: OPEN_ONSET + 1900 });
+    await until(() => stt.calls.length > sentAt, 2000);
+    stt.calls[sentAt]!.answer(SENTENCE);
+    await until(() => h.status().completed === 1, 3000);
+    const committedWrites = (): number =>
+      h.api.writes.filter(
+        (w) => w.captureUpdate === "IMMEDIATELY" && w.elements.some((e) => e.id === textA && e.text === SENTENCE),
+      ).length;
+    expect(committedWrites(), "the words themselves are the founder's edit, written once").toBe(1);
+
+    // Take 2's next slice finds the region occupied (`parts.length > 0`), so its preview leaves it — which
+    // re-renders words that are already correct. Cosmetic churn is NEVER (the captureUpdate invariant): with
+    // IMMEDIATELY the founder gets an undo step that reverts a write nothing can tell apart from the one before it.
+    await until(() => stt.calls.filter((c) => !c.done && !c.signal?.aborted).length > 0, 2000);
+    const slice = stt.calls.filter((c) => !c.done && !c.signal?.aborted).at(-1)!;
+    slice.answer("and the wall panel");
+    await wait(80);
+    expect(h.api.find(textA)!.text, "the landed words are untouched").toBe(SENTENCE);
+    expect(committedWrites(), "and no second undo checkpoint was created for them").toBe(1);
   });
 });

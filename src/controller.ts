@@ -27,6 +27,8 @@ import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/t
 
 import {
   NATIVE_CONTAINER_TOOLS,
+  isFailedWarning,
+  isInterimText,
   type CreateVoiceController,
   type FitOptions,
   type Point,
@@ -193,6 +195,13 @@ interface UtteranceEntry {
    * exists, the distinction has to be recorded.
    */
   liveTargets?: Set<string>;
+  /**
+   * Every region a PREVIEW of this utterance was rendered in. The founder watched their words appear in these
+   * boxes, so erasing one of them mid-take is a decision about this take (gate G5c) — and it is the only record
+   * that survives the pruning `renderEntry` does when a preview outlives its region: that pruning takes the entry
+   * AND the stroke record, which makes the assignment itself come back null.
+   */
+  previewTargets?: Set<string>;
   /** The words so far, as the preview currently reads. Never a part, never counted, swept on reload. */
   interimText?: string;
   /** The PROVISIONAL region the preview is drawn in (a `VoiceTarget.textId`); may still change. */
@@ -206,8 +215,12 @@ interface Session {
   utterances: Map<number, UtteranceEntry>;
   /** Stroke conversions apply in the order the strokes were drawn. */
   captureQueue: Promise<void>;
-  /** Conversions queued but not yet applied: assignment must wait for their strokes. */
-  conversions: number;
+  /**
+   * The pointer-down times of conversions queued but not yet applied — the strokes an assignment may still have to
+   * wait for. Times, not a count: assign.ts's rule is `downMs <= onsetMs + preRoll`, so a queued stroke can only
+   * change the answer for the utterances whose window it falls into, and the rest must not wait for it (round 5b).
+   */
+  pendingDowns: number[];
   /** Element ids seen at arm and after every conversion (the new element exists before onPointerDown). */
   knownIds: Set<string>;
 }
@@ -369,6 +382,16 @@ export const createVoiceController: CreateVoiceController = ({
       return null;
     }
     return { marker: marker ?? null, text };
+  };
+
+  /**
+   * Is the TEXT of a region still on the canvas? The liveness test that needs no bookkeeping at all, for the ids
+   * recorded in `UtteranceEntry.liveTargets`: their `TargetEntry` (and with it the geometry `findTarget` wants) may
+   * already have been pruned by the time the transcript comes back.
+   */
+  const isLiveRegion = (textId: string): boolean => {
+    const el = api.getSceneElementsIncludingDeleted().find((element) => element.id === textId);
+    return el !== undefined && el.type === "text" && !el.isDeleted;
   };
 
   /**
@@ -582,7 +605,14 @@ export const createVoiceController: CreateVoiceController = ({
         (el) => el.id === entry.target.markerId && el.id !== entry.target.textId,
       );
       const words = built.filter((el) => !scaffolding.includes(el));
-      applyElements(words, CaptureUpdateAction.IMMEDIATELY);
+      // Re-rendering a region whose words are ALREADY on it (a preview leaving a region another utterance committed
+      // into) is cosmetic: writing it with IMMEDIATELY created an undo checkpoint the founder did not cause. Only a
+      // change to the words is their edit — a stamped preview or a ⚠ under the same string still counts as one.
+      const rewritten =
+        String(found.text.originalText ?? found.text.text ?? "") !== combined ||
+        isInterimText(found.text) ||
+        isFailedWarning(found.text);
+      applyElements(words, rewritten ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER);
       applyElements(scaffolding, CaptureUpdateAction.NEVER);
       return true;
     }
@@ -633,6 +663,9 @@ export const createVoiceController: CreateVoiceController = ({
   ): void => {
     lastError = errorMessage(err);
     entry.failed = true;
+    // The ⚠ replaces whatever this take had previewed here: the region is no longer showing an interim transcript,
+    // and fit.markFailed is allowed to write over one (round 5b) — `hasLandedTranscript` ignores a stamped preview.
+    entry.interimShown = false;
     failed.set(u.id, { utteranceId: u.id, session: owner, utterance: u, entry, blob, attempts });
     while (failed.size > MAX_FAILED) {
       const oldest = failed.keys().next();
@@ -781,7 +814,7 @@ export const createVoiceController: CreateVoiceController = ({
     // Drop sessions with nothing left to animate or assign (failed entries keep their own references).
     if (
       owner.ended &&
-      owner.conversions === 0 &&
+      owner.pendingDowns.length === 0 &&
       [...owner.utterances.values()].every((u) => u.resolved) &&
       [...owner.targets.values()].every((entry) => entry.closed)
     ) {
@@ -866,6 +899,23 @@ export const createVoiceController: CreateVoiceController = ({
     sendFinal(owner, u, blob, 1);
   };
 
+  /**
+   * A region that comes into existence while a take is still in flight is one of THAT take's regions too.
+   *
+   * `liveTargets` is snapshotted when the audio is sent, and in round 5's headline gesture (speak while drawing)
+   * the pen is still down then: the region that ends up owning the utterance is created by convertStroke at
+   * pen-up, so it was never in the set and deleting it mid-flight read as N2d — the words were orphaned where the
+   * founder had just erased the box instead of being dropped (gate G5c). Kept current, the set means "regions this
+   * take was ever in", which is the fact the guard actually needs.
+   */
+  const noteLiveTarget = (owner: Session, textId: string): void => {
+    for (const u of owner.utterances.values()) {
+      if (!u.settled && u.liveTargets !== undefined) {
+        u.liveTargets.add(textId);
+      }
+    }
+  };
+
   // --- interim slices -----------------------------------------------------
 
   /**
@@ -900,6 +950,9 @@ export const createVoiceController: CreateVoiceController = ({
     const nextId = entry ? entry.target.textId : undefined;
     const prevId = u.interimTargetId;
     u.interimTargetId = nextId;
+    if (nextId !== undefined) {
+      (u.previewTargets ??= new Set<string>()).add(nextId);
+    }
     if (prevId !== undefined && prevId !== nextId) {
       const prev = owner.targets.get(prevId);
       if (prev) {
@@ -1099,6 +1152,14 @@ export const createVoiceController: CreateVoiceController = ({
     stopInterim(u);
     const finish = (): void => {
       u.resolved = true;
+      // The audio has done its job: a take that committed or dropped can never be retried, and a take that FAILED
+      // is retried from the `failed` map's own reference. Keeping it on the slot as well retained every WAV of the
+      // session (~320 KB per 10 s of speech) on a kiosk that is never reloaded — round 4 kept only the 20 failed
+      // ones. The finished session goes too, or `utteranceSession` holds it (and its whole targets map) for ever.
+      if (u.stt?.blob !== undefined) {
+        u.stt = { ...u.stt, blob: undefined };
+      }
+      utteranceSession.delete(u.id);
       try {
         resolveTargets(owner);
       } catch (err) {
@@ -1113,13 +1174,30 @@ export const createVoiceController: CreateVoiceController = ({
       return;
     }
     const assigned = u.assigned;
-    if (assigned !== null && u.liveTargets?.has(assigned)) {
-      const owned = owner.targets.get(assigned);
-      if (owned && !findTarget(owned.target)) {
-        // The founder deleted the region this take was already in while the words were in flight. Their deletion is
-        // the answer (gate G5c): an orphan would drop text exactly where they had just removed a box. A region that
-        // was ALREADY gone when the audio was sent is a different case and still falls through to the orphan path.
-        forgetStroke(owner, assigned);
+    const owned = assigned === null ? undefined : owner.targets.get(assigned);
+    /**
+     * The founder deleted a region this take was IN while the words were in flight. Their deletion is the answer
+     * (gate G5c): dumping the sentence as loose text where they had just erased a box is the one outcome they
+     * cannot undo into place. A region that was ALREADY gone when the audio was sent was never in `liveTargets`,
+     * and those words still fall through to the orphan path (gate N2d).
+     *
+     * Everything this rests on has to survive PRUNING (round 5b). `renderEntry` calls forgetStroke the moment it
+     * finds a region gone, and it runs on every preview move, so by the time the transcript lands the entry may be
+     * gone from `owner.targets` and its stroke record from `owner.strokes` — which makes the assignment itself come
+     * back null. So the question is asked of the ids this take recorded for itself (the region it was assigned to,
+     * and the regions it previewed in — the boxes the founder actually watched these words appear in) plus the
+     * scene. Deliberately not "any region that was alive when the audio was sent": the founder tidying up an
+     * unrelated older transcript must not silently eat the sentence they are speaking now.
+     */
+    const landsInARegion = owned !== undefined && findTarget(owned.target) !== null;
+    if (!landsInARegion) {
+      const erased =
+        (assigned !== null && u.liveTargets?.has(assigned) === true && !isLiveRegion(assigned)) ||
+        [...(u.previewTargets ?? [])].some((textId) => !isLiveRegion(textId));
+      if (erased) {
+        if (assigned !== null) {
+          forgetStroke(owner, assigned);
+        }
         dropInterim(owner, u);
         finish();
         return;
@@ -1172,22 +1250,38 @@ export const createVoiceController: CreateVoiceController = ({
 
   const runAssignment = (owner: Session): void => {
     try {
-      // A queued conversion still owes us its stroke; its own runAssignment call re-runs this.
-      //
-      // So does a pen that is still DOWN (gate N2e): a stroke only enters `owner.strokes` inside convertStroke,
-      // which the pointer-UP queues, so finalising an assignment while the founder is still drawing measures it
-      // against a stroke list that is missing the very region being drawn — the words orphaned somewhere else and
-      // (since round 4a) the box was deleted with a "nothing was heard" toast. The flush barrier therefore covers
-      // the consumer as well: onPointerUp increments `conversions` and convertStroke's `finally` re-runs this, and
-      // a disarm clears `currentStroke` before it sets `ended`, so nothing can wait for a pen that is gone.
-      if (!owner.ended && (owner.conversions > 0 || currentStroke?.session === owner)) {
-        return;
-      }
       const preRollMs = getSettings().preRollMs;
       const nowMs = owner.ended ? Infinity : capture.now();
+      /**
+       * A stroke that is still under the pen, or whose conversion is still queued, is not in `owner.strokes` yet —
+       * so an assignment finalised now is measured against a list that is missing it (gate N2e: the words orphaned
+       * somewhere else and, since round 4a, the box was deleted with a "nothing was heard" toast). The flush barrier
+       * therefore covers the consumer too: onPointerUp records the pointer-down, convertStroke's `finally` drops it
+       * and re-runs this, and a disarm clears `currentStroke` before it sets `ended`, so nothing waits for a pen
+       * that is gone.
+       *
+       * It is PER UTTERANCE (round 5b). assign.ts can only give an utterance to a stroke whose pointer-down is at
+       * or before `onsetMs + preRoll`, so a stroke that went down later cannot change that utterance's answer and
+       * the words must not wait for it: on the wall the natural rhythm is to finish the sentence about box 1 while
+       * starting box 2, and a session-wide barrier made those words wait out the whole of the next stroke — the
+       * largest remaining pen-up → words latency once round 5 had moved the round trip off that path.
+       */
+      const mustWaitFor = (onsetMs: number): boolean => {
+        if (owner.ended) {
+          return false;
+        }
+        const deadline = onsetMs + preRollMs;
+        if (currentStroke?.session === owner && currentStroke.downMs <= deadline) {
+          return true;
+        }
+        return owner.pendingDowns.some((downMs) => downMs <= deadline);
+      };
       for (const u of [...owner.utterances.values()]) {
         if (u.endMs === undefined || u.assigned !== undefined) {
           continue;
+        }
+        if (mustWaitFor(u.onsetMs)) {
+          continue; // a stroke that could still claim this utterance has not produced its region yet
         }
         const result = assign(
           { id: u.id, onsetMs: u.onsetMs, endMs: u.endMs },
@@ -1269,12 +1363,16 @@ export const createVoiceController: CreateVoiceController = ({
         orphan: false,
         interimShown: false,
       });
+      noteLiveTarget(owner, built.target.textId);
       startAnimation();
     } catch (err) {
       fail(err);
     } finally {
       refreshKnownIds(owner);
-      owner.conversions -= 1;
+      const queuedAt = owner.pendingDowns.indexOf(downMs);
+      if (queuedAt >= 0) {
+        owner.pendingDowns.splice(queuedAt, 1);
+      }
       runAssignment(owner);
       // The region the founder was drawing exists now: a preview that had nowhere to go can be shown in it.
       try {
@@ -1349,7 +1447,7 @@ export const createVoiceController: CreateVoiceController = ({
       }
       const upMs = capture.now();
       const owner = stroke.session;
-      owner.conversions += 1;
+      owner.pendingDowns.push(stroke.downMs);
       owner.captureQueue = owner.captureQueue.then(() =>
         convertStroke(owner, elementId, stroke.downMs, upMs, stroke.style),
       );
@@ -1556,7 +1654,7 @@ export const createVoiceController: CreateVoiceController = ({
         targets: new Map(),
         utterances: new Map(),
         captureQueue: Promise.resolve(),
-        conversions: 0,
+        pendingDowns: [],
         knownIds: new Set(api.getSceneElements().map((el) => el.id)),
       };
       session = next;

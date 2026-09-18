@@ -42,7 +42,7 @@ reverted if the final assignment picks a different region. Measured on the real 
 | `src/vad.ts` | `Vad` (internal to capture) | Energy VAD as a pure state machine over 20 ms RMS frames; boundaries reported as sample indices; tracks the room's noise floor (kept across `reset()`), effective threshold = max(setting, 3× floor). |
 | `src/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `src/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
-| `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. Round 5: `transcribeUtterance` (send at utterance end) and `runAssignment` (choose the region) both end at `settle`; `sendInterim`/`scheduleInterim`/`showInterim` drive the previews and `renderEntry` derives a region's appearance from its own state (parts → interim previews → placeholder). DOM-free. |
+| `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. Round 5: `transcribeUtterance` (send at utterance end) and `runAssignment` (choose the region) both end at `settle`; `sendInterim`/`scheduleInterim`/`showInterim` drive the previews and `renderEntry` derives a region's appearance from its own state (parts → interim previews → placeholder), writing words with `IMMEDIATELY` only when they actually change. Round 5b: the pen-down barrier is per utterance, and a resolved utterance's WAV is released (only the `failed` map keeps audio). DOM-free. |
 | `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. |
 | `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
 | `src/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, interim interval, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
@@ -64,8 +64,14 @@ reverted if the final assignment picks a different region. Measured on the real 
 - **Interaction-scoped identity.** "The element this stroke made" comes from the interaction
   (`appState.newElement` at pointer-down, with a per-stroke id diff as fallback), never from "the element that is
   new in the scene" — undo, paste or a remote insert while armed must not be converted.
-- **Deferred work has a flush barrier.** `onPointerUp → 30 ms → rAF → captureStroke` is a named unit that any
-  event which could invalidate it (next pointer-down, disarm) runs synchronously first.
+- **Deferred work has a flush barrier, and the barrier is PER UTTERANCE.** `onPointerUp → 30 ms → rAF →
+  captureStroke` is a named unit that any event which could invalidate it (next pointer-down, disarm) runs
+  synchronously first. An assignment must also wait for it (gate N2e), but only for the strokes that could still
+  change ITS answer: `assign.ts` can only give an utterance to a stroke whose pointer-down is ≤ `onsetMs + preRoll`,
+  so `runAssignment` waits on `currentStroke` / `Session.pendingDowns` (the queued conversions' pointer-down times,
+  which is why they are times and not a count) only when one of them falls inside that window. A session-wide
+  barrier made words that no open stroke could claim wait out the whole of the NEXT stroke — the largest remaining
+  pen-up → words latency once round 5 had moved the round trip off that path (round 5b).
 - **Ids are stable placeholder → commit.** Updates hand back `newElementWith` copies of the caller's own
   elements, so ids and seeds survive and the version counter bumps once. `VoiceTarget` carries ids, never
   elements.
@@ -78,9 +84,13 @@ reverted if the final assignment picks a different region. Measured on the real 
   where the founder drew it until the session ends, and the disarm then sweeps all of them in ONE undoable update
   with a toast that counts them. Closing a region early (`isSuperseded`) only stops speech landing in it; round 4a
   wired closing straight to deleting, which erased every box drawn before the first spoken label while latched.
-- **Landed words are the only copy there is.** Nothing may overwrite a committed transcript to report something:
-  `fit.markFailed` returns `[]` when the text already carries words, and a failure is reported through the toast,
-  `status.failed` and the retry button instead. A ⚠ warning carries `customData.voiceFailed` so `persist.ts` can
+- **Landed words are the only copy there is — but an interim preview is not landed words.** Nothing may overwrite a
+  committed transcript to report something: `fit.markFailed` returns `[]` when the text already carries words, and a
+  failure is reported through the toast, `status.failed` and the retry button instead. A `voiceInterim`-stamped text
+  is explicitly NOT such a copy (round 5b): it is this take's own guess, `persist.ts` deletes it on the next reload,
+  and the take it belongs to is the one that just failed — so the ⚠ replaces it. Before that, a final transcript
+  that failed after a preview had landed was reported NOWHERE and the region kept half a sentence at 45 % for ever
+  (the entry is `failed`, so no later render, no animation tick and no disarm sweep touches it again). A ⚠ warning carries `customData.voiceFailed` so `persist.ts` can
   sweep it without reading text content — and a commit CLEARS that stamp, or a reload would eat the transcript.
 - **The region's geometry lives in the target, not in an element.** `VoiceTarget.shape` is what a commit fits
   into, because by the second utterance (or a retry) the marker is already gone. `findTarget` treats a missing
@@ -105,8 +115,15 @@ reverted if the final assignment picks a different region. Measured on the real 
 - **A region deleted DURING a take and a region that was already gone are different answers.** The founder deleting
   a pending region is their decision (drop silently, gate G5c); an utterance whose stroke record is stale was never
   in that region and its words fall through to the orphan path (gate N2d). Since round 5 resolves the target after
-  the request returns, `UtteranceEntry.liveTargets` (the regions alive when the audio was sent) is what tells the two
-  apart — this was a real regression the full e2e caught.
+  the request returns, `UtteranceEntry.liveTargets` (the regions alive when the audio was sent, kept current by
+  `noteLiveTarget` as later conversions produce their regions — in the speak-while-drawing gesture the owning region
+  does not exist yet when the audio goes out) is what tells the two apart. The answer may not depend on bookkeeping
+  that PRUNING can take away (round 5b): `renderEntry` calls `forgetStroke` whenever a preview outlives its region,
+  which removes the entry and its stroke record and makes the assignment itself come back null, so `settle` asks the
+  question of the ids the take recorded for itself — the region it was assigned to and the regions it previewed in
+  (`previewTargets`, the boxes the founder watched these words appear in) — plus the scene. Deliberately not "any
+  region that was alive when the audio was sent": tidying up an unrelated older transcript must not eat the sentence
+  being spoken now.
 - **`captureUpdate` rules.** `CaptureUpdateAction.IMMEDIATELY` for anything the user should be able to undo
   (creating the placeholder, committing text, marking failed, discarding); `NEVER` for cosmetic churn the user
   did not cause — placeholder animation frames, retry re-arming, tool restoration, **and the marker's deletion at

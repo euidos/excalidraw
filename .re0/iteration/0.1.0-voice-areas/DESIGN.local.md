@@ -226,3 +226,40 @@ G15 provisional correction — a preview rendered in the region the pre-roll had
     (`R5c`; harness-bent, see EVIDENCE).
 G16 abandoned request — an aborted client request costs no GPU time and is visible as such
     (`scripts/stt-abort-check.mjs`, `/health.skipped`, the server log line).
+
+## Round 5b — what the review of round 5 changed
+
+Two review lenses read round 5's decoupled state machine; the failure channel and the two new side channels
+(`liveTargets`, `renderEntry`'s pruning) were where it did not end consistent. Applied:
+
+- **A failure after a preview is reported.** `fit.hasLandedTranscript` now treats a `voiceInterim`-stamped text as
+  scaffolding, so `markFailed` writes the ⚠ over a preview. Before this, `settle`'s failure branch wrote NOTHING for
+  a take whose interim had landed: the region kept a faint half-sentence that no later path could take back (the
+  entry is `failed`, so `renderEntry`, the animation tick and the disarm sweep all skip it) and `persist.ts` deleted
+  it silently on the next reload. `markFailed` also clears `entry.interimShown`.
+- **"The founder erased this region mid-take" is decided by facts that survive pruning.** `renderEntry` calls
+  `forgetStroke` whenever a preview outlives its region, which takes the entry AND its stroke record — so the old
+  guard's `owner.targets.get(assigned)` lookup was empty and the assignment itself came back null, and one Ctrl+Z
+  during a preview dumped the whole sentence as loose text where the box had just been. `settle` now asks the
+  question of `u.previewTargets` (every region this take previewed in) plus the assigned id, against the scene.
+  Deliberately NOT "any region in `liveTargets`": tidying an unrelated older transcript must not eat live speech.
+- **`liveTargets` is kept current.** `noteLiveTarget` adds each new region to every unsettled utterance's set as
+  `convertStroke` produces it. In round 5's headline gesture the pen is still down when the audio goes out, so the
+  region that ends up owning the words was never in the snapshot and erasing it read as N2d (orphan) instead of G5c.
+- **The pen-down barrier is per utterance.** `Session.pendingDowns` keeps the queued conversions' pointer-down
+  TIMES (it replaces the `conversions` counter), and `runAssignment` holds an utterance only while a stroke that
+  could still claim it — `downMs ≤ onsetMs + preRoll`, assign.ts's own rule — has not produced its region. The
+  session-wide barrier made words wait out the whole of the NEXT stroke, which is the natural wall rhythm (finish
+  the sentence about box 1 while starting box 2) and the largest pen-up → words latency round 5 had left.
+- **A resolved take releases its audio.** `settle`'s `finish()` drops `u.stt.blob` and deletes the utterance from
+  `utteranceSession`; the `failed` map (bounded at 20) keeps the only reference a retry needs. Round 5 retained
+  every WAV of the session — ~320 KB per 10 s of speech, on a kiosk that is never reloaded.
+- **Re-rendering words that are already right is cosmetic.** `renderEntry` writes the words with `IMMEDIATELY` only
+  when the content actually changes (or clears a preview/⚠ stamp), so a preview leaving a region another utterance
+  committed into no longer creates an undo checkpoint the founder did not cause.
+
+Not applied: previewing with the FREE layout instead of the bound one (lens "nice", `fit.ts commitInterim`). The
+hazard is real in principle — a bound preview the library grows would resize the founder's marker — but the fix as
+proposed leaves the marker listing a text whose `containerId` is null, which is the one-sided pair `commitInterim`'s
+comment already refuses; doing it properly means unbinding at preview time and rebinding in `resetPlaceholder`, and
+neither the lens nor this round has a measurement showing the growth happens. Carried as an open row.
