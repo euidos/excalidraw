@@ -1,0 +1,17 @@
+{
+  "name": "@euidos/boards-storage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Boards storage backend for the euidos collaborative whiteboard (Postgres, Cloudflare Access / Tailscale identity)",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "./test/run.sh"
+  },
+  "dependencies": {
+    "jose": "^6.2.12",
+    "pg": "^8.23.0"
+  }
+}

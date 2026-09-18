@@ -1,0 +1,5 @@
+node_modules/
+
+# The fork's root .gitignore drops every package-lock.json (yarn repo); this
+# service is plain npm and its lockfile is a build input for the Dockerfile.
+!package-lock.json
