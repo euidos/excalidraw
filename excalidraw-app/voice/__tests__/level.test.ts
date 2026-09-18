@@ -22,7 +22,10 @@ describe("meterScale — bar and marker are the same function of the same unit",
   it("puts the marker exactly where the bar ends when the room sits on the threshold", () => {
     for (const rms of [0.003, 0.006, 0.012, 0.02, 0.05]) {
       const m = meterScale(rms, rms);
-      expect(m.mark, `threshold ${rms} must land on the bar's own end`).toBeCloseTo(m.bar, 10);
+      expect(
+        m.mark,
+        `threshold ${rms} must land on the bar's own end`,
+      ).toBeCloseTo(m.bar, 10);
     }
   });
 
@@ -31,7 +34,9 @@ describe("meterScale — bar and marker are the same function of the same unit",
     for (const rms of [0.001, 0.004, 0.012, 0.03, 0.2]) {
       for (const threshold of [0.003, 0.012, 0.05]) {
         const m = meterScale(rms, threshold);
-        const loudEnough = Math.min(rms, METER_FULL_SCALE) > Math.min(threshold, METER_FULL_SCALE);
+        const loudEnough =
+          Math.min(rms, METER_FULL_SCALE) >
+          Math.min(threshold, METER_FULL_SCALE);
         expect(m.bar > m.mark).toBe(loudEnough);
       }
     }
@@ -51,15 +56,25 @@ describe("meterScale — bar and marker are the same function of the same unit",
     // Property: the helper's threshold is the one the live VAD thresholds against, across a grid of rooms.
     for (const floor of [0, 0.002, 0.005, 0.01, 0.02]) {
       const seed = (): ReturnType<typeof createVad> => {
-        const vad = createVad({ threshold: 0.012, onsetMs: 20, hangoverMs: 100 });
-        for (let i = 0; i < 10; i++) vad.pushFrame(floor, i); // seed the floor from a room of exactly `floor`
+        const vad = createVad({
+          threshold: 0.012,
+          onsetMs: 20,
+          hangoverMs: 100,
+        });
+        for (let i = 0; i < 10; i++) {
+          vad.pushFrame(floor, i);
+        } // seed the floor from a room of exactly `floor`
         expect(vad.noiseFloor).toBeCloseTo(floor, 10);
         return vad;
       };
       const line = effectiveThreshold(0.012, seed().noiseFloor);
       // A frame just under the line is silence; one just over it opens an utterance (onsetMs = one frame).
       expect(seed().pushFrame(line * 0.95, 10)).toHaveLength(0);
-      expect(seed().pushFrame(line * 1.05, 10).some((e) => e.type === "start")).toBe(true);
+      expect(
+        seed()
+          .pushFrame(line * 1.05, 10)
+          .some((e) => e.type === "start"),
+      ).toBe(true);
       // …and the marker the panel draws for that room sits exactly at the bar height that line produces.
       const m = meterScale(line, 0.012, floor);
       expect(m.mark).toBeCloseTo(m.bar, 10);
@@ -71,7 +86,10 @@ describe("meterScale — bar and marker are the same function of the same unit",
     expect(meterPercent(Number.NaN)).toBe(0);
     expect(meterPercent(0)).toBe(0);
     expect(meterPercent(METER_FULL_SCALE)).toBe(100);
-    expect(meterPercent(0.4), "speech pins the bar rather than escaping the element").toBe(100);
+    expect(
+      meterPercent(0.4),
+      "speech pins the bar rather than escaping the element",
+    ).toBe(100);
   });
 });
 
@@ -95,7 +113,10 @@ describe("glyphLevel — the mic glyph's own display curve", () => {
     // what made the glyph a strobe; on the glyph's own axis they all still have somewhere to grow.
     for (const rms of [0.08, 0.15]) {
       expect(meterPercent(rms), `${rms} saturates the VAD meter`).toBe(100);
-      expect(glyphLevel(rms), `${rms} must still have somewhere to grow`).toBeLessThan(0.95);
+      expect(
+        glyphLevel(rms),
+        `${rms} must still have somewhere to grow`,
+      ).toBeLessThan(0.95);
       expect(glyphLevel(rms)).toBeGreaterThan(0.25);
     }
     // A quiet talker at 0.02 is well off the floor rather than a sliver.
@@ -114,6 +135,9 @@ describe("glyphLevel — the mic glyph's own display curve", () => {
 
   it("is a different axis from the meter's, which keeps the threshold range", () => {
     expect(GLYPH_FULL_SCALE).toBeGreaterThan(METER_FULL_SCALE);
-    expect(meterPercent(0.05), "the slider's top end still fills the bar").toBeCloseTo(83.3, 1);
+    expect(
+      meterPercent(0.05),
+      "the slider's top end still fills the bar",
+    ).toBeCloseTo(83.3, 1);
   });
 });

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+
 import type { ExcalidrawElement } from "@excalidraw/element/types";
+
 import { sweepGhostPlaceholders } from "../persist";
 
 /**
@@ -23,10 +25,13 @@ const shape = (
     strokeStyle: "solid",
     boundElements: null,
     ...extra,
-  }) as unknown as ExcalidrawElement;
+  } as unknown as ExcalidrawElement);
 
 /** A region marker as fit.ts stamps it (round 4a): scaffolding that a finished take always deletes itself. */
-const marker = (id: string, extra: { boundElements?: Bound[] | null; type?: string } = {}) =>
+const marker = (
+  id: string,
+  extra: { boundElements?: Bound[] | null; type?: string } = {},
+) =>
   ({
     id,
     type: extra.type ?? "rectangle",
@@ -34,7 +39,7 @@ const marker = (id: string, extra: { boundElements?: Bound[] | null; type?: stri
     strokeStyle: "dashed",
     boundElements: extra.boundElements ?? null,
     customData: { voiceRegion: true },
-  }) as unknown as ExcalidrawElement;
+  } as unknown as ExcalidrawElement);
 
 const text = (
   id: string,
@@ -53,7 +58,7 @@ const text = (
     containerId: null,
     isDeleted: false,
     ...extra,
-  }) as unknown as ExcalidrawElement;
+  } as unknown as ExcalidrawElement);
 
 const byId = (els: readonly ExcalidrawElement[], id: string) =>
   els.find((e) => e.id === id) as unknown as Record<string, unknown>;
@@ -61,7 +66,10 @@ const byId = (els: readonly ExcalidrawElement[], id: string) =>
 describe("sweepGhostPlaceholders", () => {
   it("deletes a bound placeholder and restores its container", () => {
     const out = sweepGhostPlaceholders([
-      shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),
+      shape("c1", {
+        boundElements: [{ id: "t1", type: "text" }],
+        strokeStyle: "dashed",
+      }),
       text("t1", "·", { containerId: "c1" }),
     ]);
     expect(byId(out, "t1").isDeleted).toBe(true);
@@ -69,13 +77,19 @@ describe("sweepGhostPlaceholders", () => {
     expect(byId(out, "c1").strokeStyle).toBe("solid");
   });
 
-  it.each(["·", "··", "···", "⚠ STT", "⚠ STT timeout"])("sweeps frame %s", (frame) => {
-    const out = sweepGhostPlaceholders([
-      shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),
-      text("t1", frame, { containerId: "c1" }),
-    ]);
-    expect(byId(out, "t1").isDeleted).toBe(true);
-  });
+  it.each(["·", "··", "···", "⚠ STT", "⚠ STT timeout"])(
+    "sweeps frame %s",
+    (frame) => {
+      const out = sweepGhostPlaceholders([
+        shape("c1", {
+          boundElements: [{ id: "t1", type: "text" }],
+          strokeStyle: "dashed",
+        }),
+        text("t1", frame, { containerId: "c1" }),
+      ]);
+      expect(byId(out, "t1").isDeleted).toBe(true);
+    },
+  );
 
   it("keeps other bound texts on the container and leaves a solid stroke alone", () => {
     const out = sweepGhostPlaceholders([
@@ -95,7 +109,9 @@ describe("sweepGhostPlaceholders", () => {
   });
 
   it("deletes a bound placeholder whose container is missing", () => {
-    const out = sweepGhostPlaceholders([text("t1", "··", { containerId: "gone" })]);
+    const out = sweepGhostPlaceholders([
+      text("t1", "··", { containerId: "gone" }),
+    ]);
     expect(byId(out, "t1").isDeleted).toBe(true);
   });
 
@@ -109,17 +125,27 @@ describe("sweepGhostPlaceholders", () => {
     const out = sweepGhostPlaceholders([
       text("t1", "⚠ STT", { customData: { voiceFailed: true } }),
     ]);
-    expect(byId(out, "t1").isDeleted, "nothing could ever retry into it: the audio died with the page").toBe(true);
+    expect(
+      byId(out, "t1").isDeleted,
+      "nothing could ever retry into it: the audio died with the page",
+    ).toBe(true);
   });
 
   it("leaves real text, real shapes and free-standing STT warnings untouched", () => {
-    const input = [shape("c1"), text("t1", "hello"), text("t2", "⚠ STT failed")];
+    const input = [
+      shape("c1"),
+      text("t1", "hello"),
+      text("t2", "⚠ STT failed"),
+    ];
     const out = sweepGhostPlaceholders(input);
     expect(out).toEqual(input);
   });
 
   it("is a pure function: the input array and its elements are not mutated", () => {
-    const container = shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" });
+    const container = shape("c1", {
+      boundElements: [{ id: "t1", type: "text" }],
+      strokeStyle: "dashed",
+    });
     const placeholder = text("t1", "·", { containerId: "c1" });
     const input = [container, placeholder];
     sweepGhostPlaceholders(input);
@@ -130,7 +156,10 @@ describe("sweepGhostPlaceholders", () => {
 
   it("ignores elements already deleted", () => {
     const out = sweepGhostPlaceholders([
-      shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),
+      shape("c1", {
+        boundElements: [{ id: "t1", type: "text" }],
+        strokeStyle: "dashed",
+      }),
       text("t1", "·", { containerId: "c1", isDeleted: true }),
     ]);
     expect(byId(out, "c1").strokeStyle).toBe("dashed");
@@ -142,14 +171,19 @@ describe("sweepGhostPlaceholders", () => {
         marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
         text("t1", "··", { containerId: "m1" }),
       ]);
-      expect(byId(out, "m1").isDeleted, "the marker was never the founder's drawing").toBe(true);
+      expect(
+        byId(out, "m1").isDeleted,
+        "the marker was never the founder's drawing",
+      ).toBe(true);
       expect(byId(out, "t1").isDeleted).toBe(true);
     });
 
     it("deletes a marker whose text is gone altogether", () => {
       const out = sweepGhostPlaceholders([marker("m1"), shape("keep")]);
       expect(byId(out, "m1").isDeleted).toBe(true);
-      expect(byId(out, "keep").isDeleted, "nothing else is touched").toBe(false);
+      expect(byId(out, "keep").isDeleted, "nothing else is touched").toBe(
+        false,
+      );
       expect(byId(out, "keep").strokeStyle).toBe("solid");
     });
 
@@ -163,13 +197,19 @@ describe("sweepGhostPlaceholders", () => {
     });
 
     it("deletes a LINE marker whose placeholder text was never bound to it", () => {
-      const out = sweepGhostPlaceholders([marker("m1", { type: "line" }), text("t1", "·")]);
+      const out = sweepGhostPlaceholders([
+        marker("m1", { type: "line" }),
+        text("t1", "·"),
+      ]);
       expect(byId(out, "m1").isDeleted).toBe(true);
       expect(byId(out, "t1").isDeleted).toBe(true);
     });
 
     it("leaves a committed free text alone — a finished take has no marker left to sweep", () => {
-      const input = [text("t1", "회의 목표", { containerId: null }), shape("c1")];
+      const input = [
+        text("t1", "회의 목표", { containerId: null }),
+        shape("c1"),
+      ];
       expect(sweepGhostPlaceholders(input)).toEqual(input);
     });
 
@@ -190,25 +230,43 @@ describe("sweepGhostPlaceholders", () => {
     it("deletes an INTERIM preview and the marker it was previewed in", () => {
       const out = sweepGhostPlaceholders([
         marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
-        text("t1", "회의 목표는", { containerId: "m1", customData: { voiceInterim: true } }),
+        text("t1", "회의 목표는", {
+          containerId: "m1",
+          customData: { voiceInterim: true },
+        }),
       ]);
-      expect(byId(out, "t1").isDeleted, "half a sentence is not a transcript").toBe(true);
-      expect(byId(out, "m1").isDeleted, "and its region was never the founder's drawing").toBe(true);
+      expect(
+        byId(out, "t1").isDeleted,
+        "half a sentence is not a transcript",
+      ).toBe(true);
+      expect(
+        byId(out, "m1").isDeleted,
+        "and its region was never the founder's drawing",
+      ).toBe(true);
     });
 
     it("deletes a free-standing interim preview (a line region's text is never bound)", () => {
       const out = sweepGhostPlaceholders([
-        text("t1", "voice tool ships", { containerId: null, customData: { voiceInterim: true } }),
+        text("t1", "voice tool ships", {
+          containerId: null,
+          customData: { voiceInterim: true },
+        }),
       ]);
       expect(byId(out, "t1").isDeleted).toBe(true);
     });
 
     it("unbinds rather than deletes a container that is NOT a marker", () => {
       const out = sweepGhostPlaceholders([
-        shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),
+        shape("c1", {
+          boundElements: [{ id: "t1", type: "text" }],
+          strokeStyle: "dashed",
+        }),
         text("t1", "·", { containerId: "c1" }),
       ]);
-      expect(byId(out, "c1").isDeleted, "a shape the founder drew by hand stays").toBe(false);
+      expect(
+        byId(out, "c1").isDeleted,
+        "a shape the founder drew by hand stays",
+      ).toBe(false);
       expect(byId(out, "c1").boundElements).toBe(null);
       expect(byId(out, "c1").strokeStyle).toBe("solid");
     });

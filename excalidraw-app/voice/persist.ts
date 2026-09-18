@@ -2,8 +2,10 @@
  * Reads and writes the VANILLA excalidraw-app storage keys so the founder's existing board, app state,
  * library and images carry over to this wrapper unchanged (DESIGN gate G6).
  */
+import { createStore, entries, set as idbSet } from "idb-keyval";
+
 import type { ExcalidrawElement } from "@excalidraw/element/types";
-import { isFailedWarning, isInterimText, isRegionMarker } from "./contracts";
+
 import type {
   AppState,
   BinaryFileData,
@@ -11,7 +13,8 @@ import type {
   ExcalidrawInitialDataState,
   LibraryItems,
 } from "@excalidraw/excalidraw/types";
-import { createStore, entries, set as idbSet } from "idb-keyval";
+
+import { isFailedWarning, isInterimText, isRegionMarker } from "./contracts";
 
 const KEY_ELEMENTS = "excalidraw";
 const KEY_STATE = "excalidraw-state";
@@ -26,7 +29,8 @@ const KEY_THEME = "excalidraw-theme";
 const lib = () => import("@excalidraw/excalidraw");
 
 let filesStoreRef: ReturnType<typeof createStore> | null = null;
-const filesStore = () => (filesStoreRef ??= createStore("files-db", "files-store"));
+const filesStore = () =>
+  (filesStoreRef ??= createStore("files-db", "files-store"));
 
 function readJSON(key: string): unknown {
   try {
@@ -41,7 +45,9 @@ function readJSON(key: string): unknown {
 async function loadFiles(): Promise<BinaryFiles> {
   const files: BinaryFiles = {};
   try {
-    for (const [id, value] of await entries<string, BinaryFileData>(filesStore())) {
+    for (const [id, value] of await entries<string, BinaryFileData>(
+      filesStore(),
+    )) {
       if (value && typeof value === "object" && "dataURL" in value) {
         files[String(id)] = value;
       }
@@ -53,7 +59,11 @@ async function loadFiles(): Promise<BinaryFiles> {
 }
 
 /** Placeholder animation frames written by fit.setPlaceholderFrame; see contracts.ts FitModule. */
-const PLACEHOLDER_FRAMES = new Set(["\u00b7", "\u00b7\u00b7", "\u00b7\u00b7\u00b7"]);
+const PLACEHOLDER_FRAMES = new Set([
+  "\u00b7",
+  "\u00b7\u00b7",
+  "\u00b7\u00b7\u00b7",
+]);
 const FAILED_PREFIX = "\u26a0 STT";
 
 const isGhostText = (text: string): boolean => {
@@ -92,7 +102,9 @@ const containerIdOf = (el: ExcalidrawElement): string | null => {
  * Pure so it can be unit-tested without the library's restore pipeline. Returns a NEW array; only the touched
  * elements are replaced (shallow copies), the rest are passed through.
  */
-export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: readonly T[]): T[] {
+export function sweepGhostPlaceholders<T extends ExcalidrawElement>(
+  elements: readonly T[],
+): T[] {
   const byId = new Map<string, T>();
   for (const el of elements) {
     byId.set(el.id, el);
@@ -125,7 +137,11 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: re
       // Free-standing litter: an orphan's placeholder, the text of a line region, or a "⚠ STT" warning that never
       // had (or has lost) its marker. A warning is only litter when the app STAMPED it (round 4c): deciding by text
       // content would also eat a founder-typed "⚠ STT …", and every warning this app writes carries the stamp.
-      if (PLACEHOLDER_FRAMES.has(content.trim()) || isFailedWarning(el) || isInterimText(el)) {
+      if (
+        PLACEHOLDER_FRAMES.has(content.trim()) ||
+        isFailedWarning(el) ||
+        isInterimText(el)
+      ) {
         deleted.add(el.id);
       }
       continue;
@@ -162,7 +178,10 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: re
       return el;
     }
     const bound = (el.boundElements ?? []).filter((b) => !drop.has(b.id));
-    const next: Record<string, unknown> = { ...el, boundElements: bound.length ? bound : null };
+    const next: Record<string, unknown> = {
+      ...el,
+      boundElements: bound.length ? bound : null,
+    };
     // The dashed stroke is the "transcription pending" cue; with the placeholder gone it must not linger.
     if (el.strokeStyle === "dashed") {
       next.strokeStyle = "solid";
@@ -195,7 +214,12 @@ export async function loadInitialData(): Promise<ExcalidrawInitialDataState | nu
   if (!elements.length && !appState && !Object.keys(files).length) {
     return null;
   }
-  return { elements, appState: appState ?? undefined, files, scrollToContent: false };
+  return {
+    elements,
+    appState: appState ?? undefined,
+    files,
+    scrollToContent: false,
+  };
 }
 
 /**
@@ -239,13 +263,21 @@ function cleanAppState(appState: AppState): Record<string, unknown> {
 }
 
 export interface Persister {
-  onChange(elements: readonly ExcalidrawElement[], appState: AppState, files: BinaryFiles): void;
+  onChange(
+    elements: readonly ExcalidrawElement[],
+    appState: AppState,
+    files: BinaryFiles,
+  ): void;
   flush(): void;
 }
 
 export function createPersister(): Persister {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let latest: { elements: readonly ExcalidrawElement[]; appState: AppState; files: BinaryFiles } | null = null;
+  let latest: {
+    elements: readonly ExcalidrawElement[];
+    appState: AppState;
+    files: BinaryFiles;
+  } | null = null;
   const writtenFileIds = new Set<string>();
 
   const writeFiles = (files: BinaryFiles) => {
@@ -316,13 +348,16 @@ export const libraryAdapter = {
     // vanilla wrote either a bare item array or {library|libraryItems: [...]}
     const items = Array.isArray(raw)
       ? raw
-      : ((raw as Record<string, unknown>).libraryItems ?? (raw as Record<string, unknown>).library);
+      : (raw as Record<string, unknown>).libraryItems ??
+        (raw as Record<string, unknown>).library;
     if (!Array.isArray(items)) {
       return null;
     }
     try {
       const { restoreLibraryItems } = await lib();
-      return { libraryItems: restoreLibraryItems(items, "unpublished") as LibraryItems };
+      return {
+        libraryItems: restoreLibraryItems(items, "unpublished") as LibraryItems,
+      };
     } catch (err) {
       console.warn("[voice] could not restore library", err);
       return null;
@@ -330,7 +365,10 @@ export const libraryAdapter = {
   },
   save(libraryData: { libraryItems: LibraryItems }): void {
     try {
-      localStorage.setItem(KEY_LIBRARY, JSON.stringify(libraryData.libraryItems));
+      localStorage.setItem(
+        KEY_LIBRARY,
+        JSON.stringify(libraryData.libraryItems),
+      );
     } catch (err) {
       console.warn("[voice] could not persist library", err);
     }

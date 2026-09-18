@@ -22,8 +22,10 @@ const listeners = new Set<Listener>();
 
 const num = (v: unknown, fallback: number): number =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
-const str = (v: unknown, fallback: string): string => (typeof v === "string" ? v : fallback);
-const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
+const str = (v: unknown, fallback: string): string =>
+  typeof v === "string" ? v : fallback;
+const bool = (v: unknown, fallback: boolean): boolean =>
+  typeof v === "boolean" ? v : fallback;
 
 /** Field-by-field coercion: a hand-edited or half-written localStorage entry must never break boot. */
 function coerce(raw: unknown): VoiceSettings {

@@ -37,7 +37,10 @@ class MemoryStorage {
 }
 
 const store = new MemoryStorage();
-Object.defineProperty(globalThis, "localStorage", { value: store, configurable: true });
+Object.defineProperty(globalThis, "localStorage", {
+  value: store,
+  configurable: true,
+});
 
 const stored = (patch: Record<string, unknown>): void =>
   store.setItem(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, ...patch }));
@@ -77,14 +80,28 @@ describe("loadSettings — the language allow-list", () => {
   });
 
   it("clamps a negative interim interval to off rather than spinning the preview timer", () => {
-    store.setItem(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: -500 }));
+    store.setItem(
+      KEY,
+      JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: -500 }),
+    );
     expect(loadSettings().interimMs).toBe(0);
-    store.setItem(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: "soon" }));
-    expect(loadSettings().interimMs, "a non-number falls back to the default").toBe(DEFAULT_SETTINGS.interimMs);
+    store.setItem(
+      KEY,
+      JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: "soon" }),
+    );
+    expect(
+      loadSettings().interimMs,
+      "a non-number falls back to the default",
+    ).toBe(DEFAULT_SETTINGS.interimMs);
   });
 
   it("leaves every other field alone", () => {
-    stored({ language: "ja", sttUrl: "http://example:1", maxFontSize: 42, warmMicOnBoot: false });
+    stored({
+      language: "ja",
+      sttUrl: "http://example:1",
+      maxFontSize: 42,
+      warmMicOnBoot: false,
+    });
     const s = loadSettings();
     expect(s.sttUrl).toBe("http://example:1");
     expect(s.maxFontSize).toBe(42);
@@ -94,13 +111,26 @@ describe("loadSettings — the language allow-list", () => {
 
 describe("defaultSttUrl — the hosted board must call the server same-origin", () => {
   it("dials the desktop directly from loopback (the wall kiosk) and outside a browser", () => {
-    expect(defaultSttUrl({ hostname: "127.0.0.1", origin: "http://127.0.0.1:8765" })).toBe(STT_DIRECT_URL);
-    expect(defaultSttUrl({ hostname: "localhost", origin: "http://localhost:4173" })).toBe(STT_DIRECT_URL);
+    expect(
+      defaultSttUrl({ hostname: "127.0.0.1", origin: "http://127.0.0.1:8765" }),
+    ).toBe(STT_DIRECT_URL);
+    expect(
+      defaultSttUrl({ hostname: "localhost", origin: "http://localhost:4173" }),
+    ).toBe(STT_DIRECT_URL);
     expect(defaultSttUrl(undefined), "node / vitest").toBe(STT_DIRECT_URL);
   });
   it("uses the nginx /stt proxy on every other origin (HTTPS pages cannot fetch plain HTTP)", () => {
-    expect(defaultSttUrl({ hostname: "euidos-internal.pony-bellatrix.ts.net", origin: "https://euidos-internal.pony-bellatrix.ts.net" }))
-      .toBe("https://euidos-internal.pony-bellatrix.ts.net/stt");
-    expect(defaultSttUrl({ hostname: "board.euidos.ai", origin: "https://board.euidos.ai" })).toBe("https://board.euidos.ai/stt");
+    expect(
+      defaultSttUrl({
+        hostname: "euidos-internal.pony-bellatrix.ts.net",
+        origin: "https://euidos-internal.pony-bellatrix.ts.net",
+      }),
+    ).toBe("https://euidos-internal.pony-bellatrix.ts.net/stt");
+    expect(
+      defaultSttUrl({
+        hostname: "board.euidos.ai",
+        origin: "https://board.euidos.ai",
+      }),
+    ).toBe("https://board.euidos.ai/stt");
   });
 });

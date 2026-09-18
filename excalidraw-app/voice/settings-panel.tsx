@@ -1,7 +1,9 @@
 /** Compact settings panel for the voice tool. Plain React; look comes from voice.css + Excalidraw CSS vars. */
 import { useEffect, useState } from "react";
-import type { CheckHealth, VoiceSettings } from "./contracts";
+
 import { meterScale } from "./level";
+
+import type { CheckHealth, VoiceSettings } from "./contracts";
 
 /**
  * The mic glyph for the main-menu entry that opens this panel (App.tsx). Sized in `em` because the library's own
@@ -39,7 +41,10 @@ export interface SettingsPanelProps {
 }
 
 type MicOption = { deviceId: string; label: string };
-type TestState = { kind: "idle" } | { kind: "testing" } | { kind: "done"; text: string; ok: boolean };
+type TestState =
+  | { kind: "idle" }
+  | { kind: "testing" }
+  | { kind: "done"; text: string; ok: boolean };
 
 const clamp = (v: number, lo: number, hi: number, fallback: number) =>
   Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
@@ -85,7 +90,10 @@ export function SettingsPanel({
     };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Node && !(target instanceof Element && target.closest(".voice-settings"))) {
+      if (
+        target instanceof Node &&
+        !(target instanceof Element && target.closest(".voice-settings"))
+      ) {
         onClose();
       }
     };
@@ -113,7 +121,10 @@ export function SettingsPanel({
           devices
             .filter((d) => d.kind === "audioinput")
             // labels are empty until mic permission is granted, so fall back to a stable ordinal
-            .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Microphone ${i + 1}` })),
+            .map((d, i) => ({
+              deviceId: d.deviceId,
+              label: d.label || `Microphone ${i + 1}`,
+            })),
         );
       })
       .catch((err) => console.warn("[voice] could not list microphones", err));
@@ -137,11 +148,17 @@ export function SettingsPanel({
         kind: "done",
         ok: r.ok,
         text: r.ok
-          ? `ok${r.warm ? " · warm" : " · cold"}${r.model ? ` · ${r.model}` : ""}`
+          ? `ok${r.warm ? " · warm" : " · cold"}${
+              r.model ? ` · ${r.model}` : ""
+            }`
           : "unreachable",
       });
     } catch (err) {
-      setTest({ kind: "done", ok: false, text: err instanceof Error ? err.message : "failed" });
+      setTest({
+        kind: "done",
+        ok: false,
+        text: err instanceof Error ? err.message : "failed",
+      });
     }
   };
 
@@ -149,7 +166,12 @@ export function SettingsPanel({
     <div className="voice-settings" role="dialog" aria-label="Voice settings">
       <div className="voice-settings__header">
         <span className="voice-settings__title">Voice settings</span>
-        <button type="button" className="voice-settings__close" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="voice-settings__close"
+          onClick={onClose}
+          aria-label="Close"
+        >
           ✕
         </button>
       </div>
@@ -166,7 +188,10 @@ export function SettingsPanel({
 
       <label className="voice-settings__row">
         <span>Language</span>
-        <select value={settings.language} onChange={(e) => patch({ language: e.target.value })}>
+        <select
+          value={settings.language}
+          onChange={(e) => patch({ language: e.target.value })}
+        >
           {LANGUAGES.map(([value, label]) => (
             <option key={value || "auto"} value={value}>
               {label}
@@ -177,12 +202,19 @@ export function SettingsPanel({
 
       <label className="voice-settings__row">
         <span>Prompt</span>
-        <input type="text" value={settings.prompt} onChange={(e) => patch({ prompt: e.target.value })} />
+        <input
+          type="text"
+          value={settings.prompt}
+          onChange={(e) => patch({ prompt: e.target.value })}
+        />
       </label>
 
       <label className="voice-settings__row">
         <span>Microphone</span>
-        <select value={settings.deviceId} onChange={(e) => patch({ deviceId: e.target.value })}>
+        <select
+          value={settings.deviceId}
+          onChange={(e) => patch({ deviceId: e.target.value })}
+        >
           <option value="">Default</option>
           {mics.map((m) => (
             <option key={m.deviceId} value={m.deviceId}>
@@ -199,7 +231,11 @@ export function SettingsPanel({
           min={10}
           max={400}
           value={settings.maxFontSize}
-          onChange={(e) => patch({ maxFontSize: Number(e.target.value) || settings.maxFontSize })}
+          onChange={(e) =>
+            patch({
+              maxFontSize: Number(e.target.value) || settings.maxFontSize,
+            })
+          }
         />
       </label>
 
@@ -210,7 +246,12 @@ export function SettingsPanel({
           min={10}
           max={400}
           value={settings.lineMaxFontSize}
-          onChange={(e) => patch({ lineMaxFontSize: Number(e.target.value) || settings.lineMaxFontSize })}
+          onChange={(e) =>
+            patch({
+              lineMaxFontSize:
+                Number(e.target.value) || settings.lineMaxFontSize,
+            })
+          }
         />
       </label>
 
@@ -221,7 +262,12 @@ export function SettingsPanel({
           min={6}
           max={400}
           value={settings.lineMinFontSize}
-          onChange={(e) => patch({ lineMinFontSize: Number(e.target.value) || settings.lineMinFontSize })}
+          onChange={(e) =>
+            patch({
+              lineMinFontSize:
+                Number(e.target.value) || settings.lineMinFontSize,
+            })
+          }
         />
       </label>
 
@@ -233,10 +279,21 @@ export function SettingsPanel({
           max={4000}
           step={100}
           value={settings.preRollMs}
-          onChange={(e) => patch({ preRollMs: clamp(Number(e.target.value), 0, 4000, settings.preRollMs) })}
+          onChange={(e) =>
+            patch({
+              preRollMs: clamp(
+                Number(e.target.value),
+                0,
+                4000,
+                settings.preRollMs,
+              ),
+            })
+          }
         />
       </label>
-      <p className="voice-settings__help">speech may start this long before its stroke</p>
+      <p className="voice-settings__help">
+        speech may start this long before its stroke
+      </p>
 
       <label className="voice-settings__row">
         <span>Interim results every (ms)</span>
@@ -246,10 +303,21 @@ export function SettingsPanel({
           max={5000}
           step={100}
           value={settings.interimMs}
-          onChange={(e) => patch({ interimMs: clamp(Number(e.target.value), 0, 5000, settings.interimMs) })}
+          onChange={(e) =>
+            patch({
+              interimMs: clamp(
+                Number(e.target.value),
+                0,
+                5000,
+                settings.interimMs,
+              ),
+            })
+          }
         />
       </label>
-      <p className="voice-settings__help">words appear while you are still talking; 0 turns it off</p>
+      <p className="voice-settings__help">
+        words appear while you are still talking; 0 turns it off
+      </p>
 
       <label className="voice-settings__row">
         <span>VAD threshold</span>
@@ -261,17 +329,34 @@ export function SettingsPanel({
             max={0.05}
             step={0.001}
             value={settings.vadThreshold}
-            onChange={(e) => patch({ vadThreshold: clamp(Number(e.target.value), 0.003, 0.05, settings.vadThreshold) })}
+            onChange={(e) =>
+              patch({
+                vadThreshold: clamp(
+                  Number(e.target.value),
+                  0.003,
+                  0.05,
+                  settings.vadThreshold,
+                ),
+              })
+            }
           />
           <output>{settings.vadThreshold.toFixed(3)}</output>
         </span>
       </label>
       <div className="voice-settings__row">
         <span>Level</span>
-        <div className="voice-meter" role="presentation" data-testid="voice-meter">
+        <div
+          className="voice-meter"
+          role="presentation"
+          data-testid="voice-meter"
+        >
           {/* One mapping, one unit (gate N12): src/level.ts turns the RAW RMS the capture emits into both numbers,
               and the marker sits at the threshold the VAD really uses — max(setting, 3 x room floor). */}
-          <div className="voice-meter__fill" style={{ width: `${meter.bar}%` }} data-level={meter.bar.toFixed(1)} />
+          <div
+            className="voice-meter__fill"
+            style={{ width: `${meter.bar}%` }}
+            data-level={meter.bar.toFixed(1)}
+          />
           <div
             className="voice-meter__mark"
             style={{ left: `${meter.mark}%` }}
@@ -291,15 +376,27 @@ export function SettingsPanel({
       </label>
 
       <div className="voice-settings__actions">
-        <button type="button" onClick={runTest} disabled={test.kind === "testing"}>
+        <button
+          type="button"
+          onClick={runTest}
+          disabled={test.kind === "testing"}
+        >
           {test.kind === "testing" ? "Testing…" : "Test STT"}
         </button>
         {test.kind === "done" && (
-          <span className={`voice-settings__result${test.ok ? "" : " voice-settings__result--bad"}`}>
+          <span
+            className={`voice-settings__result${
+              test.ok ? "" : " voice-settings__result--bad"
+            }`}
+          >
             {test.text}
           </span>
         )}
-        <button type="button" className="voice-settings__done" onClick={onClose}>
+        <button
+          type="button"
+          className="voice-settings__done"
+          onClick={onClose}
+        >
           Close
         </button>
       </div>

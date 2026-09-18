@@ -11,7 +11,13 @@
  * once the pre-roll window that started at the onset has elapsed. Before that the same utterance may legitimately
  * change owner, so the controller must hold it.
  */
-import type { AssignOptions, AssignUtterance, Assignment, StrokeRecord, Utterance } from "./contracts-capture";
+import type {
+  AssignOptions,
+  AssignUtterance,
+  Assignment,
+  StrokeRecord,
+  Utterance,
+} from "./contracts-capture";
 
 const DEFAULT_PRE_ROLL_MS = 1500;
 
@@ -28,8 +34,12 @@ export const assignUtterance: AssignUtterance = (
   // every VAD event. `>=` on the tie so the LAST equally-late stroke in the array wins, as the contract states.
   let best: StrokeRecord | undefined;
   for (const stroke of strokes) {
-    if (stroke.downMs > deadline) continue;
-    if (best === undefined || stroke.downMs >= best.downMs) best = stroke;
+    if (stroke.downMs > deadline) {
+      continue;
+    }
+    if (best === undefined || stroke.downMs >= best.downMs) {
+      best = stroke;
+    }
   }
 
   return { strokeId: best ? best.id : null, final: nowMs >= deadline };

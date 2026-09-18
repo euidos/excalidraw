@@ -7,7 +7,11 @@ import type {
   ExcalidrawTextElement,
   FontFamilyValues,
 } from "@excalidraw/element/types";
-import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type {
+  AppState,
+  ExcalidrawImperativeAPI,
+} from "@excalidraw/excalidraw/types";
+
 import type { AssignUtterance, VoiceCapture } from "./contracts-capture";
 
 export type Point = { x: number; y: number };
@@ -15,7 +19,13 @@ export type Point = { x: number; y: number };
 /** What a stroke was recognised as. Areas keep the stroke's bounding box; lines keep their endpoints. */
 export type StrokeShape =
   | { kind: "line"; start: Point; end: Point; length: number }
-  | { kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number };
+  | {
+      kind: "rectangle" | "ellipse";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
 
 export interface RecognizeOptions {
   /** Strokes whose bounding-box diagonal is below this (scene px) are taps → null. Default 12. */
@@ -30,7 +40,10 @@ export interface RecognizeOptions {
   verticalLineAreaWidth?: number;
 }
 /** stroke.ts — pure geometry, unit-tested. Returns null for taps / degenerate input. */
-export type RecognizeStroke = (points: readonly Point[], opts?: RecognizeOptions) => StrokeShape | null;
+export type RecognizeStroke = (
+  points: readonly Point[],
+  opts?: RecognizeOptions,
+) => StrokeShape | null;
 
 /** The user's current item style, snapshotted from appState when a stroke is captured. */
 export interface StyleSnapshot {
@@ -59,7 +72,9 @@ export interface FitOptions {
  * here" — and it is deleted the moment the text lands, so a marker found in a stored scene is always a leftover.
  * `customData` survives localStorage, which is why the mark lives there and not in a module-level set of ids.
  */
-export const VOICE_REGION_CUSTOM_DATA: { voiceRegion: true } = { voiceRegion: true };
+export const VOICE_REGION_CUSTOM_DATA: { voiceRegion: true } = {
+  voiceRegion: true,
+};
 /** True for elements built as a region marker. Cheap enough to call per element in a sweep. */
 export const isRegionMarker = (
   el: { customData?: Record<string, unknown> } | null | undefined,
@@ -72,7 +87,9 @@ export const isRegionMarker = (
  * founder-typed "⚠ STT …". A commit clears the stamp in the same update that writes the words, so a reload never
  * sweeps a landed transcript.
  */
-export const VOICE_FAILED_CUSTOM_DATA: { voiceFailed: true } = { voiceFailed: true };
+export const VOICE_FAILED_CUSTOM_DATA: { voiceFailed: true } = {
+  voiceFailed: true,
+};
 /** True for the "⚠ STT" text of a take that failed and was never recovered. */
 export const isFailedWarning = (
   el: { customData?: Record<string, unknown> } | null | undefined,
@@ -84,7 +101,9 @@ export const isFailedWarning = (
  * change of provisional region) overwrites it. It therefore must never survive a reload — `persist.ts` sweeps it
  * by this stamp, exactly like a failure warning, because the words in it look like a real transcript.
  */
-export const VOICE_INTERIM_CUSTOM_DATA: { voiceInterim: true } = { voiceInterim: true };
+export const VOICE_INTERIM_CUSTOM_DATA: { voiceInterim: true } = {
+  voiceInterim: true,
+};
 /** True for a text element currently showing an in-flight (interim) transcript. */
 export const isInterimText = (
   el: { customData?: Record<string, unknown> } | null | undefined,
@@ -103,7 +122,10 @@ export interface VoiceTarget {
   /** The region itself, in scene coordinates: the ONLY geometry a commit may fit into once the marker is gone. */
   shape: StrokeShape;
 }
-export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTarget };
+export type PlaceholderResult = {
+  elements: ExcalidrawElement[];
+  target: VoiceTarget;
+};
 
 /**
  * fit.ts — element construction and text fitting. Runs in the browser (uses the library's text measurement).
@@ -151,9 +173,20 @@ export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTa
  * controller awaits it before it arms, so no transcript is ever fitted against fallback metrics.
  */
 export interface FitModule {
-  buildPlaceholder(shape: StrokeShape, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult;
-  buildPlaceholderFor(container: ExcalidrawElement, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult;
-  setPlaceholderFrame(text: ExcalidrawTextElement, frame: number): ExcalidrawTextElement;
+  buildPlaceholder(
+    shape: StrokeShape,
+    style: StyleSnapshot,
+    opts?: FitOptions,
+  ): PlaceholderResult;
+  buildPlaceholderFor(
+    container: ExcalidrawElement,
+    style: StyleSnapshot,
+    opts?: FitOptions,
+  ): PlaceholderResult;
+  setPlaceholderFrame(
+    text: ExcalidrawTextElement,
+    frame: number,
+  ): ExcalidrawTextElement;
   commitText(
     target: VoiceTarget,
     text: ExcalidrawTextElement,
@@ -191,7 +224,12 @@ export interface FitModule {
   ): ExcalidrawElement[];
   warmFonts(fontFamily?: number): Promise<void>;
   /** Plain text at a point (no region): used when speech arrives without a stroke. */
-  buildFreeText(at: Point, transcript: string, style: StyleSnapshot, fontSize: number): ExcalidrawTextElement;
+  buildFreeText(
+    at: Point,
+    transcript: string,
+    style: StyleSnapshot,
+    fontSize: number,
+  ): ExcalidrawTextElement;
 }
 
 /**
@@ -207,13 +245,35 @@ export interface SttOptions {
   prompt?: string;
   timeoutMs?: number; // default 20000
 }
-export interface SttResult { text: string; language?: string; durationS?: number; latencyMs: number }
-export type SttErrorKind = "offline" | "timeout" | "http" | "loading" | "aborted";
-export class SttError extends Error {
-  constructor(public kind: SttErrorKind, message: string, public status?: number) { super(message); }
+export interface SttResult {
+  text: string;
+  language?: string;
+  durationS?: number;
+  latencyMs: number;
 }
-export type Transcribe = (blob: Blob, opts: SttOptions, signal?: AbortSignal) => Promise<SttResult>;
-export type CheckHealth = (baseUrl: string) => Promise<{ ok: boolean; warm: boolean; model?: string }>;
+export type SttErrorKind =
+  | "offline"
+  | "timeout"
+  | "http"
+  | "loading"
+  | "aborted";
+export class SttError extends Error {
+  constructor(
+    public kind: SttErrorKind,
+    message: string,
+    public status?: number,
+  ) {
+    super(message);
+  }
+}
+export type Transcribe = (
+  blob: Blob,
+  opts: SttOptions,
+  signal?: AbortSignal,
+) => Promise<SttResult>;
+export type CheckHealth = (
+  baseUrl: string,
+) => Promise<{ ok: boolean; warm: boolean; model?: string }>;
 
 /** settings.ts — persisted in localStorage under "voice-settings". */
 export interface VoiceSettings {
@@ -251,9 +311,17 @@ export const STT_DIRECT_URL = "http://100.81.33.83:8770";
  * can be unit-tested outside a browser.
  */
 export function defaultSttUrl(
-  loc: { hostname: string; origin: string } | undefined = typeof location === "undefined" ? undefined : location,
+  loc: { hostname: string; origin: string } | undefined = typeof location ===
+  "undefined"
+    ? undefined
+    : location,
 ): string {
-  if (!loc || loc.hostname === "localhost" || loc.hostname === "127.0.0.1" || loc.hostname === "") {
+  if (
+    !loc ||
+    loc.hostname === "localhost" ||
+    loc.hostname === "127.0.0.1" ||
+    loc.hostname === ""
+  ) {
     return STT_DIRECT_URL;
   }
   return `${loc.origin}/stt`;
@@ -335,18 +403,31 @@ export interface VoiceController {
   getStatus(): VoiceStatus;
   dispose(): void;
 }
-export type CreateVoiceController = (deps: VoiceControllerDeps) => VoiceController;
+export type CreateVoiceController = (
+  deps: VoiceControllerDeps,
+) => VoiceController;
 
 /** Tools whose freshly drawn element becomes the region marker directly (modifier behaviour). */
-export const NATIVE_CONTAINER_TOOLS = ["rectangle", "ellipse", "diamond", "line"] as const;
+export const NATIVE_CONTAINER_TOOLS = [
+  "rectangle",
+  "ellipse",
+  "diamond",
+  "line",
+] as const;
 
 /** toolbar.tsx — DOM injection next to the native shape buttons. */
-export interface ToolbarHandle { update(status: VoiceStatus): void; unmount(): void }
+export interface ToolbarHandle {
+  update(status: VoiceStatus): void;
+  unmount(): void;
+}
 export interface ToolbarOptions {
   onToggle: () => void;
   onRetry: () => void;
 }
-export type MountVoiceToolbarButton = (excalidrawRoot: HTMLElement, opts: ToolbarOptions) => ToolbarHandle;
+export type MountVoiceToolbarButton = (
+  excalidrawRoot: HTMLElement,
+  opts: ToolbarOptions,
+) => ToolbarHandle;
 
 /** Debug surface exposed on window for the Playwright e2e (never used by app code). */
 export interface VoiceDebug {
@@ -364,5 +445,7 @@ declare global {
   // EXCALIDRAW_ASSET_PATH was declared here in the 0.18.1 wrapper; inside the monorepo
   // packages/excalidraw/global.d.ts already declares it (as string | string[] | undefined) and a
   // second, narrower declaration is a TS2717 conflict. Only the debug surface is ours.
-  interface Window { __excalidrawVoice?: VoiceDebug }
+  interface Window {
+    __excalidrawVoice?: VoiceDebug;
+  }
 }

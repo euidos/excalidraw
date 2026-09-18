@@ -20,7 +20,9 @@ export const METER_FULL_SCALE = 0.06;
 
 /** RAW RMS → percentage of the meter's width, clamped into it. */
 export function meterPercent(rms: number): number {
-  if (!Number.isFinite(rms)) return 0;
+  if (!Number.isFinite(rms)) {
+    return 0;
+  }
   return Math.max(0, Math.min(100, (rms / METER_FULL_SCALE) * 100));
 }
 
@@ -38,7 +40,9 @@ export const GLYPH_FULL_SCALE = 0.25;
  * lifts conversational speech (~0.02 RMS) off the floor: 0.02 → 0.28, 0.08 → 0.57, 0.25 and up → 1.
  */
 export function glyphLevel(rms: number): number {
-  if (!Number.isFinite(rms) || rms <= 0) return 0;
+  if (!Number.isFinite(rms) || rms <= 0) {
+    return 0;
+  }
   return Math.min(1, Math.sqrt(rms / GLYPH_FULL_SCALE));
 }
 
@@ -46,7 +50,10 @@ export function glyphLevel(rms: number): number {
  * The threshold the VAD actually applies: vad.ts opens an utterance above max(setting, 3 × measured noise floor),
  * so a marker drawn at the setting alone lies in any room louder than a third of it.
  */
-export function effectiveThreshold(vadThreshold: number, noiseFloor = 0): number {
+export function effectiveThreshold(
+  vadThreshold: number,
+  noiseFloor = 0,
+): number {
   const floor = Number.isFinite(noiseFloor) ? Math.max(0, noiseFloor) : 0;
   return Math.max(vadThreshold, FLOOR_MULTIPLIER * floor);
 }
@@ -61,7 +68,11 @@ export interface MeterScale {
 }
 
 /** Both numbers a level meter draws, from one unit through one mapping. */
-export function meterScale(rms: number, vadThreshold: number, noiseFloor = 0): MeterScale {
+export function meterScale(
+  rms: number,
+  vadThreshold: number,
+  noiseFloor = 0,
+): MeterScale {
   const threshold = effectiveThreshold(vadThreshold, noiseFloor);
   return { bar: meterPercent(rms), mark: meterPercent(threshold), threshold };
 }

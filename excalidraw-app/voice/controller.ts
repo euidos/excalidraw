@@ -20,11 +20,15 @@
  */
 import { CaptureUpdateAction, newElementWith } from "@excalidraw/excalidraw";
 import { STROKE_WIDTH } from "@excalidraw/common";
+
 import type {
   ExcalidrawElement,
   ExcalidrawTextElement,
 } from "@excalidraw/element/types";
-import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type {
+  AppState,
+  ExcalidrawImperativeAPI,
+} from "@excalidraw/excalidraw/types";
 
 import {
   NATIVE_CONTAINER_TOOLS,
@@ -47,7 +51,8 @@ import {
   type UtteranceEvent,
 } from "./contracts-capture";
 
-type CaptureAction = (typeof CaptureUpdateAction)[keyof typeof CaptureUpdateAction];
+type CaptureAction =
+  typeof CaptureUpdateAction[keyof typeof CaptureUpdateAction];
 type ActiveTool = AppState["activeTool"];
 type SetActiveToolArg = Parameters<ExcalidrawImperativeAPI["setActiveTool"]>[0];
 
@@ -84,8 +89,11 @@ const isScaffoldText = (text: string): boolean => {
   return t === "" || /^\u00b7{1,3}$/.test(t) || t.startsWith(FAILED_TEXT);
 };
 
-const NATIVE_TOOL_SET: ReadonlySet<string> = new Set<string>(NATIVE_CONTAINER_TOOLS);
-const isNativeContainerTool = (type: string): boolean => NATIVE_TOOL_SET.has(type);
+const NATIVE_TOOL_SET: ReadonlySet<string> = new Set<string>(
+  NATIVE_CONTAINER_TOOLS,
+);
+const isNativeContainerTool = (type: string): boolean =>
+  NATIVE_TOOL_SET.has(type);
 
 /**
  * Is `ownDownMs`'s target done receiving speech because a later stroke took over?
@@ -104,12 +112,17 @@ export function isSuperseded(
 ): boolean {
   return strokes.some(
     (later) =>
-      later.downMs > ownDownMs && openOnsets.every((onset) => later.downMs - preRollMs <= onset),
+      later.downMs > ownDownMs &&
+      openOnsets.every((onset) => later.downMs - preRollMs <= onset),
   );
 }
 
 const errorMessage = (err: unknown): string =>
-  err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
+  err instanceof Error
+    ? err.message
+    : typeof err === "string"
+    ? err
+    : String(err);
 
 const snapshotStyle = (appState: AppState): StyleSnapshot => ({
   strokeColor: appState.currentItemStrokeColor,
@@ -118,7 +131,8 @@ const snapshotStyle = (appState: AppState): StyleSnapshot => ({
   // 0.18.1 carried a number here; master carries a StrokeWidthKey ("thin" | "medium" | "bold") and
   // resolves it per element type. Every element the voice tool makes is non-freedraw, so STROKE_WIDTH
   // is the whole of getStrokeWidthByKey for us — StyleSnapshot still owns a scene-px number.
-  strokeWidth: STROKE_WIDTH[appState.currentItemStrokeWidthKey] ?? STROKE_WIDTH.medium,
+  strokeWidth:
+    STROKE_WIDTH[appState.currentItemStrokeWidthKey] ?? STROKE_WIDTH.medium,
   strokeStyle: appState.currentItemStrokeStyle,
   roughness: appState.currentItemRoughness,
   opacity: appState.currentItemOpacity,
@@ -336,7 +350,9 @@ export const createVoiceController: CreateVoiceController = ({
   };
   const toast = (message: string, duration?: number): void => {
     try {
-      api.setToast(duration === undefined ? { message } : { message, duration });
+      api.setToast(
+        duration === undefined ? { message } : { message, duration },
+      );
     } catch (err) {
       console.warn("[voice] setToast failed", err);
     }
@@ -345,13 +361,18 @@ export const createVoiceController: CreateVoiceController = ({
   // --- scene helpers ------------------------------------------------------
 
   /** Replace elements by id (keeping scene order) and append the ones that are new. */
-  const applyElements = (updates: readonly ExcalidrawElement[], captureUpdate: CaptureAction): void => {
+  const applyElements = (
+    updates: readonly ExcalidrawElement[],
+    captureUpdate: CaptureAction,
+  ): void => {
     if (updates.length === 0) {
       return;
     }
     const current = api.getSceneElementsIncludingDeleted();
     const byId = new Map(updates.map((el) => [el.id, el]));
-    const next: ExcalidrawElement[] = current.map((el) => byId.get(el.id) ?? el);
+    const next: ExcalidrawElement[] = current.map(
+      (el) => byId.get(el.id) ?? el,
+    );
     const known = new Set(current.map((el) => el.id));
     for (const el of updates) {
       if (!known.has(el.id)) {
@@ -370,7 +391,10 @@ export const createVoiceController: CreateVoiceController = ({
    */
   const findTarget = (
     target: VoiceTarget,
-  ): { marker: ExcalidrawElement | null; text: ExcalidrawTextElement } | null => {
+  ): {
+    marker: ExcalidrawElement | null;
+    text: ExcalidrawTextElement;
+  } | null => {
     const elements = api.getSceneElementsIncludingDeleted();
     let marker: ExcalidrawElement | undefined;
     let text: ExcalidrawTextElement | undefined;
@@ -394,7 +418,9 @@ export const createVoiceController: CreateVoiceController = ({
    * already have been pruned by the time the transcript comes back.
    */
   const isLiveRegion = (textId: string): boolean => {
-    const el = api.getSceneElementsIncludingDeleted().find((element) => element.id === textId);
+    const el = api
+      .getSceneElementsIncludingDeleted()
+      .find((element) => element.id === textId);
     return el !== undefined && el.type === "text" && !el.isDeleted;
   };
 
@@ -422,7 +448,10 @@ export const createVoiceController: CreateVoiceController = ({
   const viewportCentre = (): Point => {
     const state = api.getAppState();
     const zoom = state.zoom.value || 1;
-    return { x: state.width / 2 / zoom - state.scrollX, y: state.height / 2 / zoom - state.scrollY };
+    return {
+      x: state.width / 2 / zoom - state.scrollX,
+      y: state.height / 2 / zoom - state.scrollY,
+    };
   };
 
   const refreshKnownIds = (target: Session): void => {
@@ -449,7 +478,12 @@ export const createVoiceController: CreateVoiceController = ({
         for (const entry of s.targets.values()) {
           // Only targets still waiting for their first transcript animate — and not the ones already showing the
           // words so far, which the dots would overwrite three times a second (round 5).
-          if (!entry.closed && !entry.failed && !entry.interimShown && entry.parts.length === 0) {
+          if (
+            !entry.closed &&
+            !entry.failed &&
+            !entry.interimShown &&
+            entry.parts.length === 0
+          ) {
             ids.add(entry.target.textId);
           }
         }
@@ -549,7 +583,11 @@ export const createVoiceController: CreateVoiceController = ({
       };
     } catch (err) {
       console.warn("[voice] free-text measurement failed", err);
-      return { text: transcript, originalText: transcript, strokeColor: entry.style.strokeColor };
+      return {
+        text: transcript,
+        originalText: transcript,
+        strokeColor: entry.style.strokeColor,
+      };
     }
   };
 
@@ -563,7 +601,11 @@ export const createVoiceController: CreateVoiceController = ({
   /** The previews of every utterance whose PROVISIONAL region is this target, in onset order. */
   const interimText = (owner: Session, entry: TargetEntry): string =>
     [...owner.utterances.values()]
-      .filter((u) => u.interimText !== undefined && u.interimTargetId === entry.target.textId)
+      .filter(
+        (u) =>
+          u.interimText !== undefined &&
+          u.interimTargetId === entry.target.textId,
+      )
       .sort((a, b) => a.onsetMs - b.onsetMs || a.id - b.id)
       .map((u) => u.interimText ?? "")
       .join(" ")
@@ -593,20 +635,31 @@ export const createVoiceController: CreateVoiceController = ({
       entry.interimShown = false;
       if (entry.orphan) {
         applyElements(
-          [newElementWith(found.text, orphanPatch(entry, found.text, combined))],
+          [
+            newElementWith(
+              found.text,
+              orphanPatch(entry, found.text, combined),
+            ),
+          ],
           CaptureUpdateAction.IMMEDIATELY,
         );
         return true;
       }
       const built = fit.commitText(
-        entry.target, found.text, combined, entry.style, found.marker, fitOptions(),
+        entry.target,
+        found.text,
+        combined,
+        entry.style,
+        found.marker,
+        fitOptions(),
       );
       // The WORDS are the founder's edit and must be undoable; the marker's removal is scaffolding the app put
       // there, so it is applied with NEVER. Otherwise one Ctrl+Z after a commit brings the dashed box back as a
       // live, ownerless region (nothing would ever discard it again) — exactly the shape request 1 asked to make
       // disappear. Two updates, same tick, same order: words first, then the scaffolding leaves.
       const scaffolding = built.filter(
-        (el) => el.id === entry.target.markerId && el.id !== entry.target.textId,
+        (el) =>
+          el.id === entry.target.markerId && el.id !== entry.target.textId,
       );
       const words = built.filter((el) => !scaffolding.includes(el));
       // Re-rendering a region whose words are ALREADY on it (a preview leaving a region another utterance committed
@@ -616,7 +669,10 @@ export const createVoiceController: CreateVoiceController = ({
         String(found.text.originalText ?? found.text.text ?? "") !== combined ||
         isInterimText(found.text) ||
         isFailedWarning(found.text);
-      applyElements(words, rewritten ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER);
+      applyElements(
+        words,
+        rewritten ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER,
+      );
       applyElements(scaffolding, CaptureUpdateAction.NEVER);
       return true;
     }
@@ -627,7 +683,12 @@ export const createVoiceController: CreateVoiceController = ({
     const preview = entry.orphan ? "" : interimText(owner, entry);
     if (preview && found.marker) {
       const built = fit.commitInterim(
-        entry.target, found.text, preview, entry.style, found.marker, fitOptions(),
+        entry.target,
+        found.text,
+        preview,
+        entry.style,
+        found.marker,
+        fitOptions(),
       );
       if (built.length > 0) {
         // Cosmetic churn the founder did not cause: NEVER, or every slice would be its own undo step.
@@ -638,7 +699,13 @@ export const createVoiceController: CreateVoiceController = ({
     }
     if (entry.interimShown) {
       applyElements(
-        fit.resetPlaceholder(entry.target, found.marker, found.text, entry.style, fitOptions()),
+        fit.resetPlaceholder(
+          entry.target,
+          found.marker,
+          found.text,
+          entry.style,
+          fitOptions(),
+        ),
         CaptureUpdateAction.NEVER,
       );
       entry.interimShown = false;
@@ -670,7 +737,14 @@ export const createVoiceController: CreateVoiceController = ({
     // The ⚠ replaces whatever this take had previewed here: the region is no longer showing an interim transcript,
     // and fit.markFailed is allowed to write over one (round 5b) — `hasLandedTranscript` ignores a stamped preview.
     entry.interimShown = false;
-    failed.set(u.id, { utteranceId: u.id, session: owner, utterance: u, entry, blob, attempts });
+    failed.set(u.id, {
+      utteranceId: u.id,
+      session: owner,
+      utterance: u,
+      entry,
+      blob,
+      attempts,
+    });
     while (failed.size > MAX_FAILED) {
       const oldest = failed.keys().next();
       if (oldest.done) {
@@ -715,7 +789,10 @@ export const createVoiceController: CreateVoiceController = ({
     if (!found) {
       return;
     }
-    applyElements([newElementWith(found.text, { isDeleted: true })], CaptureUpdateAction.IMMEDIATELY);
+    applyElements(
+      [newElementWith(found.text, { isDeleted: true })],
+      CaptureUpdateAction.IMMEDIATELY,
+    );
   };
 
   /**
@@ -727,7 +804,10 @@ export const createVoiceController: CreateVoiceController = ({
    * trace. A region the founder drew is THEIRS until the take is over: it stays on the canvas, closed, and the
    * disarm removes the leftovers in ONE undoable update that says how many.
    */
-  const discardUnspoken = (owner: Session, entries: readonly TargetEntry[]): void => {
+  const discardUnspoken = (
+    owner: Session,
+    entries: readonly TargetEntry[],
+  ): void => {
     const updates: ExcalidrawElement[] = [];
     let regions = 0;
     for (const entry of entries) {
@@ -737,7 +817,9 @@ export const createVoiceController: CreateVoiceController = ({
         continue;
       }
       regions += 1;
-      updates.push(...fit.discard(entry.target, found.marker, found.text, entry.style));
+      updates.push(
+        ...fit.discard(entry.target, found.marker, found.text, entry.style),
+      );
     }
     if (updates.length === 0) {
       return;
@@ -746,7 +828,9 @@ export const createVoiceController: CreateVoiceController = ({
     // Without a toast a silent room and a mic that heard nothing of what was said look identical, and after round 4a
     // there is nothing left on the canvas to point at either.
     toast(
-      regions === 1 ? NO_SPEECH_TOAST : `${regions} regions removed \u2014 nothing was said`,
+      regions === 1
+        ? NO_SPEECH_TOAST
+        : `${regions} regions removed \u2014 nothing was said`,
       DROP_TOAST_MS,
     );
   };
@@ -789,7 +873,8 @@ export const createVoiceController: CreateVoiceController = ({
         const superseded =
           // An orphan has no stroke of its own: it is done as soon as its utterance is.
           entry.orphan ||
-          (own !== undefined && isSuperseded(own.downMs, owner.strokes, openOnsets, preRollMs));
+          (own !== undefined &&
+            isSuperseded(own.downMs, owner.strokes, openOnsets, preRollMs));
         if (!owner.ended && !superseded) {
           continue;
         }
@@ -808,7 +893,12 @@ export const createVoiceController: CreateVoiceController = ({
         }
       }
       // A region the founder drew and never spoke into stays exactly where they drew it until the take is over.
-      if (owner.ended && entry.parts.length === 0 && !entry.failed && !entry.orphan) {
+      if (
+        owner.ended &&
+        entry.parts.length === 0 &&
+        !entry.failed &&
+        !entry.orphan
+      ) {
         unspoken.push(entry);
       }
     }
@@ -833,7 +923,12 @@ export const createVoiceController: CreateVoiceController = ({
    * down, the conversion queue may be full and the pre-roll window may still be open, none of which this knows or
    * cares about (round 5). The answer lands on `u.stt` and `settle()` decides what to do with it.
    */
-  const sendFinal = (owner: Session, u: UtteranceEntry, blob: Blob, attempts: number): void => {
+  const sendFinal = (
+    owner: Session,
+    u: UtteranceEntry,
+    blob: Blob,
+    attempts: number,
+  ): void => {
     const settings = getSettings();
     const abort = new AbortController();
     pending.set(u.id, { abort });
@@ -847,14 +942,23 @@ export const createVoiceController: CreateVoiceController = ({
       try {
         const result = await transcribe(
           blob,
-          { baseUrl: settings.sttUrl, language: settings.language, prompt: settings.prompt },
+          {
+            baseUrl: settings.sttUrl,
+            language: settings.language,
+            prompt: settings.prompt,
+          },
           abort.signal,
         );
         if (disposed) {
           return;
         }
         lastSttLatencyMs = result.latencyMs;
-        u.stt = { state: "done", text: (result.text ?? "").trim(), blob, attempts };
+        u.stt = {
+          state: "done",
+          text: (result.text ?? "").trim(),
+          blob,
+          attempts,
+        };
       } catch (err) {
         if (disposed) {
           return;
@@ -898,7 +1002,9 @@ export const createVoiceController: CreateVoiceController = ({
       return;
     }
     u.liveTargets = new Set(
-      [...owner.targets.values()].filter((e) => findTarget(e.target)).map((e) => e.target.textId),
+      [...owner.targets.values()]
+        .filter((e) => findTarget(e.target))
+        .map((e) => e.target.textId),
     );
     sendFinal(owner, u, blob, 1);
   };
@@ -927,7 +1033,10 @@ export const createVoiceController: CreateVoiceController = ({
    * that is explicitly NOT final and may still move. Only a live region that nothing has landed in qualifies — a
    * preview may never paint over committed words, a ⚠ warning, a closed region or an orphan's free text.
    */
-  const provisionalTarget = (owner: Session, u: UtteranceEntry): TargetEntry | null => {
+  const provisionalTarget = (
+    owner: Session,
+    u: UtteranceEntry,
+  ): TargetEntry | null => {
     const preRollMs = getSettings().preRollMs;
     const { strokeId } = assign(
       { id: u.id, onsetMs: u.onsetMs, endMs: u.endMs ?? capture.now() },
@@ -939,7 +1048,13 @@ export const createVoiceController: CreateVoiceController = ({
       return null;
     }
     const entry = owner.targets.get(strokeId);
-    if (!entry || entry.orphan || entry.closed || entry.failed || entry.parts.length > 0) {
+    if (
+      !entry ||
+      entry.orphan ||
+      entry.closed ||
+      entry.failed ||
+      entry.parts.length > 0
+    ) {
       return null;
     }
     const found = findTarget(entry.target);
@@ -948,7 +1063,11 @@ export const createVoiceController: CreateVoiceController = ({
   };
 
   /** Show (or move) an utterance's preview, re-rendering both the region it leaves and the region it enters. */
-  const showInterim = (owner: Session, u: UtteranceEntry, text: string): void => {
+  const showInterim = (
+    owner: Session,
+    u: UtteranceEntry,
+    text: string,
+  ): void => {
     u.interimText = text;
     const entry = provisionalTarget(owner, u);
     const nextId = entry ? entry.target.textId : undefined;
@@ -973,7 +1092,11 @@ export const createVoiceController: CreateVoiceController = ({
    * The preview is over (the final transcript is about to land, or the utterance produced nothing). `keepTextId` is
    * the region the words are going into: re-rendering it here would flash a placeholder in the same tick.
    */
-  const dropInterim = (owner: Session, u: UtteranceEntry, keepTextId?: string): void => {
+  const dropInterim = (
+    owner: Session,
+    u: UtteranceEntry,
+    keepTextId?: string,
+  ): void => {
     const prevId = u.interimTargetId;
     u.interimTargetId = undefined;
     u.interimText = undefined;
@@ -1010,12 +1133,22 @@ export const createVoiceController: CreateVoiceController = ({
       try {
         const result = await transcribe(
           blob,
-          { baseUrl: settings.sttUrl, language: settings.language, prompt: settings.prompt },
+          {
+            baseUrl: settings.sttUrl,
+            language: settings.language,
+            prompt: settings.prompt,
+          },
           abort.signal,
         );
         // A slice that returns after a newer one, after the utterance ended, or after the take settled is stale:
         // the final transcript is the one that counts and it must never be overwritten by a preview.
-        if (disposed || abort.signal.aborted || seq !== u.interimSeq || u.settled || u.endMs !== undefined) {
+        if (
+          disposed ||
+          abort.signal.aborted ||
+          seq !== u.interimSeq ||
+          u.settled ||
+          u.endMs !== undefined
+        ) {
           return;
         }
         const text = (result.text ?? "").trim();
@@ -1045,7 +1178,10 @@ export const createVoiceController: CreateVoiceController = ({
       return;
     }
     clearInterimTimer(u);
-    const wait = Math.max(interimMs, INTERIM_MIN_AGE_MS - (capture.now() - u.onsetMs));
+    const wait = Math.max(
+      interimMs,
+      INTERIM_MIN_AGE_MS - (capture.now() - u.onsetMs),
+    );
     const timer = setTimeout(() => {
       timeouts.delete(timer);
       u.interimTimer = undefined;
@@ -1073,7 +1209,10 @@ export const createVoiceController: CreateVoiceController = ({
   };
 
   /** Speech that no stroke can claim becomes plain text where the pen last was. */
-  const orphanTarget = (owner: Session, u: UtteranceEntry): TargetEntry | null => {
+  const orphanTarget = (
+    owner: Session,
+    u: UtteranceEntry,
+  ): TargetEntry | null => {
     if (u.orphanTextId !== undefined) {
       const existing = owner.targets.get(u.orphanTextId);
       if (existing) {
@@ -1112,7 +1251,11 @@ export const createVoiceController: CreateVoiceController = ({
    * the utterance falls through to the next-best candidate and finally to the orphan path instead of being
    * handed to a shape that recommit() will only drop again.
    */
-  const liveTarget = (owner: Session, u: UtteranceEntry, strokeId: string | null): TargetEntry | null => {
+  const liveTarget = (
+    owner: Session,
+    u: UtteranceEntry,
+    strokeId: string | null,
+  ): TargetEntry | null => {
     const preRollMs = getSettings().preRollMs;
     let id = strokeId;
     while (id !== null) {
@@ -1193,10 +1336,13 @@ export const createVoiceController: CreateVoiceController = ({
      * scene. Deliberately not "any region that was alive when the audio was sent": the founder tidying up an
      * unrelated older transcript must not silently eat the sentence they are speaking now.
      */
-    const landsInARegion = owned !== undefined && findTarget(owned.target) !== null;
+    const landsInARegion =
+      owned !== undefined && findTarget(owned.target) !== null;
     if (!landsInARegion) {
       const erased =
-        (assigned !== null && u.liveTargets?.has(assigned) === true && !isLiveRegion(assigned)) ||
+        (assigned !== null &&
+          u.liveTargets?.has(assigned) === true &&
+          !isLiveRegion(assigned)) ||
         [...(u.previewTargets ?? [])].some((textId) => !isLiveRegion(textId));
       if (erased) {
         if (assigned !== null) {
@@ -1241,7 +1387,14 @@ export const createVoiceController: CreateVoiceController = ({
           renderEntry(owner, entry);
         }
       } else {
-        markFailed(owner, u, entry, stt.blob ?? new Blob([]), stt.attempts, stt.error);
+        markFailed(
+          owner,
+          u,
+          entry,
+          stt.blob ?? new Blob([]),
+          stt.attempts,
+          stt.error,
+        );
       }
     } catch (err) {
       console.warn("[voice] failure handling failed", err);
@@ -1275,7 +1428,10 @@ export const createVoiceController: CreateVoiceController = ({
           return false;
         }
         const deadline = onsetMs + preRollMs;
-        if (currentStroke?.session === owner && currentStroke.downMs <= deadline) {
+        if (
+          currentStroke?.session === owner &&
+          currentStroke.downMs <= deadline
+        ) {
           return true;
         }
         return owner.pendingDowns.some((downMs) => downMs <= deadline);
@@ -1323,22 +1479,31 @@ export const createVoiceController: CreateVoiceController = ({
       if (disposed) {
         return;
       }
-      const element = api.getSceneElementsIncludingDeleted().find((el) => el.id === elementId);
+      const element = api
+        .getSceneElementsIncludingDeleted()
+        .find((el) => el.id === elementId);
       if (!element || element.isDeleted) {
         return; // undone, deleted, or never finalised (a zero-size click)
       }
       const opts = fitOptions();
-      let built: { elements: ExcalidrawElement[]; target: VoiceTarget } | null = null;
+      let built: { elements: ExcalidrawElement[]; target: VoiceTarget } | null =
+        null;
       if (element.type === "freedraw") {
         const zoom = api.getAppState().zoom.value || 1;
-        const points: Point[] = element.points.map((p) => ({ x: element.x + p[0], y: element.y + p[1] }));
+        const points: Point[] = element.points.map((p) => ({
+          x: element.x + p[0],
+          y: element.y + p[1],
+        }));
         const shape = recognize(points, {
           minSize: TAP_MIN_SCREEN_PX / zoom,
           verticalLineAreaWidth: VERTICAL_LINE_AREA_SCREEN_PX / zoom,
         });
         if (!shape) {
           // A tap / palm contact: erase the ink, claim nothing.
-          applyElements([newElementWith(element, { isDeleted: true })], CaptureUpdateAction.IMMEDIATELY);
+          applyElements(
+            [newElementWith(element, { isDeleted: true })],
+            CaptureUpdateAction.IMMEDIATELY,
+          );
           return;
         }
         built = fit.buildPlaceholder(shape, style, opts);
@@ -1393,7 +1558,10 @@ export const createVoiceController: CreateVoiceController = ({
    * freshest element of the tool's own type that the session has not seen yet (RETRO L3: identity comes from
    * the interaction, never from a whole-scene diff at capture time).
    */
-  const pickCandidate = (owner: Session, expected: string): string | undefined => {
+  const pickCandidate = (
+    owner: Session,
+    expected: string,
+  ): string | undefined => {
     try {
       const state = api.getAppState();
       const fresh = state.newElement;
@@ -1403,7 +1571,11 @@ export const createVoiceController: CreateVoiceController = ({
       const elements = api.getSceneElements();
       for (let i = elements.length - 1; i >= 0; i -= 1) {
         const el = elements[i];
-        if (!el.isDeleted && el.type === expected && !owner.knownIds.has(el.id)) {
+        if (
+          !el.isDeleted &&
+          el.type === expected &&
+          !owner.knownIds.has(el.id)
+        ) {
           return el.id;
         }
       }
@@ -1415,7 +1587,10 @@ export const createVoiceController: CreateVoiceController = ({
 
   const offPointerDown = api.onPointerDown((tool, pointerDownState) => {
     try {
-      lastPointer = { x: pointerDownState.origin.x, y: pointerDownState.origin.y };
+      lastPointer = {
+        x: pointerDownState.origin.x,
+        y: pointerDownState.origin.y,
+      };
       const owner = session;
       if (disposed || mode === "idle" || !owner || owner.ended) {
         return;
@@ -1445,7 +1620,9 @@ export const createVoiceController: CreateVoiceController = ({
       // newElement is still set here — the library finalises it after this callback.
       const fresh = api.getAppState().newElement;
       const elementId =
-        fresh && fresh.type === stroke.toolType ? fresh.id : (stroke.candidateId ?? fresh?.id);
+        fresh && fresh.type === stroke.toolType
+          ? fresh.id
+          : stroke.candidateId ?? fresh?.id;
       if (!elementId) {
         return;
       }
@@ -1527,7 +1704,10 @@ export const createVoiceController: CreateVoiceController = ({
       transcribeUtterance(owner, entry);
       if (entry.assigned === undefined) {
         // Assignment only becomes actionable once no future stroke could still claim this utterance.
-        const wait = Math.max(0, entry.onsetMs + getSettings().preRollMs - capture.now());
+        const wait = Math.max(
+          0,
+          entry.onsetMs + getSettings().preRollMs - capture.now(),
+        );
         clearFinalTimer(entry);
         const timer = setTimeout(() => {
           timeouts.delete(timer);
@@ -1646,7 +1826,10 @@ export const createVoiceController: CreateVoiceController = ({
         emit();
         return;
       }
-      capture.setVad({ threshold: settings.vadThreshold, minUtteranceMs: settings.minSegmentMs });
+      capture.setVad({
+        threshold: settings.vadThreshold,
+        minUtteranceMs: settings.minSegmentMs,
+      });
       utteranceCount = 0;
       orphanCount = 0;
       droppedCount = 0;
@@ -1778,7 +1961,9 @@ export const createVoiceController: CreateVoiceController = ({
             }),
           ];
           if (!entry.entry.orphan && found.marker) {
-            restored.push(newElementWith(found.marker, { strokeStyle: "dashed" }));
+            restored.push(
+              newElementWith(found.marker, { strokeStyle: "dashed" }),
+            );
           }
           // Cosmetic re-arming the user did not cause.
           applyElements(restored, CaptureUpdateAction.NEVER);
@@ -1788,7 +1973,12 @@ export const createVoiceController: CreateVoiceController = ({
           sessions.add(entry.session);
           // A retry is a NEW take for this utterance: settle() must be allowed to act on it again.
           entry.utterance.settled = false;
-          sendFinal(entry.session, entry.utterance, entry.blob, entry.attempts + 1);
+          sendFinal(
+            entry.session,
+            entry.utterance,
+            entry.blob,
+            entry.attempts + 1,
+          );
         }
       } catch (err) {
         fail(err);

@@ -16,8 +16,14 @@
  *
  * Round 4b: the glyph itself is the level meter — see MIC_SVG and buttonVisualState.
  */
-import type { MountVoiceToolbarButton, ToolbarHandle, ToolbarOptions, VoiceStatus } from "./contracts";
 import { glyphLevel } from "./level";
+
+import type {
+  MountVoiceToolbarButton,
+  ToolbarHandle,
+  ToolbarOptions,
+  VoiceStatus,
+} from "./contracts";
 
 /** A press that travels further than this (CSS px) is a drag/palm smear, not a tap. */
 const TAP_SLOP_PX = 24;
@@ -59,7 +65,9 @@ export function buttonTitle(status: VoiceStatus): string {
   const error = status.lastError ? `\n⚠ ${status.lastError}` : "";
   const dropped =
     status.dropped > 0
-      ? `\ndropped ${status.dropped}${status.lastDropped ? `: "${status.lastDropped}"` : ""}`
+      ? `\ndropped ${status.dropped}${
+          status.lastDropped ? `: "${status.lastDropped}"` : ""
+        }`
       : "";
   return `${BASE_TITLE}${error}${dropped}`;
 }
@@ -90,7 +98,9 @@ export function buttonVisualState(status: VoiceStatus): ToolbarVisualState {
       "voice-tool--recording": status.recording,
       "voice-tool--speaking": armed && status.speaking,
       "voice-tool--mic-missing":
-        status.mic === "denied" || status.mic === "missing" || status.mic === "error",
+        status.mic === "denied" ||
+        status.mic === "missing" ||
+        status.mic === "error",
     },
     // The glyph's own display curve (level.ts `glyphLevel`): the settings meter keeps the VAD-threshold axis, whose
     // 0.06 full scale pinned the capsule at 100% for anything louder than a whisper.
@@ -99,7 +109,9 @@ export function buttonVisualState(status: VoiceStatus): ToolbarVisualState {
 }
 
 function findToolbarRow(root: HTMLElement): HTMLElement | null {
-  const rows = root.querySelectorAll<HTMLElement>(".App-toolbar .Stack_horizontal");
+  const rows = root.querySelectorAll<HTMLElement>(
+    ".App-toolbar .Stack_horizontal",
+  );
   for (const row of rows) {
     if (row.querySelector('[data-testid="toolbar-freedraw"]')) {
       return row;
@@ -113,7 +125,10 @@ function lastNativeToolLabel(row: HTMLElement): HTMLElement | null {
   const labels = row.querySelectorAll<HTMLElement>("button.ToolIcon");
   let last: HTMLElement | null = null;
   for (const label of labels) {
-    if (label.classList.contains("voice-tool") || label.classList.contains("voice-retry")) {
+    if (
+      label.classList.contains("voice-tool") ||
+      label.classList.contains("voice-retry")
+    ) {
       continue;
     }
     // master puts the testid on the button itself, not on a nested input.
@@ -130,7 +145,8 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
 ): ToolbarHandle => {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "ToolIcon ToolIcon_type_toggle ToolIcon_size_medium voice-tool";
+  button.className =
+    "ToolIcon ToolIcon_type_toggle ToolIcon_size_medium voice-tool";
   button.title = BASE_TITLE;
   button.setAttribute("data-testid", "toolbar-voice");
   button.setAttribute("aria-label", "Voice area");
@@ -144,7 +160,8 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
 
   const retry = document.createElement("button");
   retry.type = "button";
-  retry.className = "ToolIcon ToolIcon_type_toggle ToolIcon_size_medium voice-retry";
+  retry.className =
+    "ToolIcon ToolIcon_type_toggle ToolIcon_size_medium voice-retry";
   retry.title = "Retry failed transcriptions";
   retry.setAttribute("data-testid", "toolbar-voice-retry");
   retry.setAttribute("aria-label", "Retry failed transcriptions");
@@ -247,7 +264,10 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       for (const [name, on] of Object.entries(visual.classes)) {
         button.classList.toggle(name, on);
       }
-      button.setAttribute("aria-pressed", status.mode !== "idle" ? "true" : "false");
+      button.setAttribute(
+        "aria-pressed",
+        status.mode !== "idle" ? "true" : "false",
+      );
       const label = status.pending > 0 ? String(status.pending) : "";
       if (badge.textContent !== label) {
         badge.textContent = label;
@@ -265,7 +285,9 @@ export const mountVoiceToolbarButton: MountVoiceToolbarButton = (
       retry.hidden = status.failed <= 0;
       const retryTitle =
         status.failed > 0
-          ? `Retry ${status.failed} failed transcription${status.failed === 1 ? "" : "s"}`
+          ? `Retry ${status.failed} failed transcription${
+              status.failed === 1 ? "" : "s"
+            }`
           : "Retry failed transcriptions";
       if (retry.title !== retryTitle) {
         retry.title = retryTitle;

@@ -35,7 +35,10 @@ afterEach(() => {
 describe("transcribe — the uploaded file is named after what capture.ts actually cut", () => {
   it("names the round-2 PCM blob segment.wav", async () => {
     const first = stubFetch();
-    await transcribe(new Blob([new Uint8Array(64)], { type: "audio/wav" }), OPTS);
+    await transcribe(
+      new Blob([new Uint8Array(64)], { type: "audio/wav" }),
+      OPTS,
+    );
     expect(first().fileName).toBe("segment.wav");
     expect(first().url).toBe("http://stt.invalid:8770/v1/audio/transcriptions");
   });
@@ -58,6 +61,8 @@ describe("transcribe — the uploaded file is named after what capture.ts actual
 
   it("types a rejection from a stricter server rather than swallowing it", async () => {
     stubFetch(400);
-    await expect(transcribe(new Blob(["x"], { type: "audio/wav" }), OPTS)).rejects.toBeInstanceOf(SttError);
+    await expect(
+      transcribe(new Blob(["x"], { type: "audio/wav" }), OPTS),
+    ).rejects.toBeInstanceOf(SttError);
   });
 });

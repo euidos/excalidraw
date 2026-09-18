@@ -81,7 +81,11 @@ export interface StrokeRecord {
   downMs: number;
   upMs?: number;
 }
-export interface Utterance { id: number; onsetMs: number; endMs: number }
+export interface Utterance {
+  id: number;
+  onsetMs: number;
+  endMs: number;
+}
 export interface AssignOptions {
   /** Speech may begin this long before its stroke's pointer-down and still belong to it. Default 1500. */
   preRollMs?: number;
@@ -96,14 +100,33 @@ export interface Assignment {
  * Rule: candidates are strokes with downMs ≤ onsetMs + preRollMs; the latest candidate wins. An utterance that
  * starts before any stroke and outlives the pre-roll is an orphan. Assignment is only actionable when `final`.
  */
-export type AssignUtterance = (u: Utterance, strokes: readonly StrokeRecord[], nowMs: number, opts?: AssignOptions) => Assignment;
+export type AssignUtterance = (
+  u: Utterance,
+  strokes: readonly StrokeRecord[],
+  nowMs: number,
+  opts?: AssignOptions,
+) => Assignment;
 
 /** Transcripts that whisper produces from near-silence; matched after trimming/punctuation stripping, case-insensitive. */
 export const HALLUCINATION_BLOCKLIST = [
-  "감사합니다", "시청해주셔서 감사합니다", "시청해 주셔서 감사합니다", "구독과 좋아요", "자막 제공", "자막 by",
-  "뉴스", "MBC 뉴스", "KBS 뉴스",
-  "thank you", "thanks for watching", "thank you for watching", "you", "bye", "subtitles by", "amara.org",
-  "subtitles by amara.org", "subtitles by the amara.org community",
+  "감사합니다",
+  "시청해주셔서 감사합니다",
+  "시청해 주셔서 감사합니다",
+  "구독과 좋아요",
+  "자막 제공",
+  "자막 by",
+  "뉴스",
+  "MBC 뉴스",
+  "KBS 뉴스",
+  "thank you",
+  "thanks for watching",
+  "thank you for watching",
+  "you",
+  "bye",
+  "subtitles by",
+  "amara.org",
+  "subtitles by amara.org",
+  "subtitles by the amara.org community",
 ];
 /**
  * Only multi-word entries get the fuzzy substring match. A short entry ("you", "bye", "뉴스") is a substring of
@@ -116,14 +139,28 @@ const SUBSTRING_MIN_LENGTH = 8;
 const despace = (s: string): string => s.replace(/\s+/g, "");
 
 export function isHallucination(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[.!?,、。…\s]+$/g, "").replace(/^[\s.!?,]+/, "");
-  if (!t) return true;
+  const t = text
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?,、。…\s]+$/g, "")
+    .replace(/^[\s.!?,]+/, "");
+  if (!t) {
+    return true;
+  }
   const squashed = despace(t);
-  return HALLUCINATION_BLOCKLIST.some(entry => {
+  return HALLUCINATION_BLOCKLIST.some((entry) => {
     const b = entry.toLowerCase();
-    if (t === b) return true;
+    if (t === b) {
+      return true;
+    }
     // Whole-text equality ignoring spaces: an exact match, so it is safe for the short entries too.
-    if (squashed === despace(b)) return true;
-    return b.length >= SUBSTRING_MIN_LENGTH && t.length <= b.length + 3 && t.includes(b);
+    if (squashed === despace(b)) {
+      return true;
+    }
+    return (
+      b.length >= SUBSTRING_MIN_LENGTH &&
+      t.length <= b.length + 3 &&
+      t.includes(b)
+    );
   });
 }

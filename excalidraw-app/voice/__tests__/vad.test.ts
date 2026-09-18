@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { encodeWav } from "../capture";
 import createVadDefault, { createVad, type Vad, type VadEvent } from "../vad";
 
@@ -21,7 +22,9 @@ function feed(vad: Vad, frames: number[], firstFrame = 0): Emitted[] {
   const out: Emitted[] = [];
   frames.forEach((rms, i) => {
     const frame = firstFrame + i;
-    for (const event of vad.pushFrame(rms, frame)) out.push({ frame, event });
+    for (const event of vad.pushFrame(rms, frame)) {
+      out.push({ frame, event });
+    }
   });
   return out;
 }
@@ -33,11 +36,19 @@ const LEAD_IN = 30;
 /** 700 ms hangover = 35 frames; 60 closes any open utterance. */
 const TAIL = 60;
 
-function starts(emitted: Emitted[]): Array<Extract<VadEvent, { type: "start" }>> {
-  return emitted.map(e => e.event).filter((e): e is Extract<VadEvent, { type: "start" }> => e.type === "start");
+function starts(
+  emitted: Emitted[],
+): Array<Extract<VadEvent, { type: "start" }>> {
+  return emitted
+    .map((e) => e.event)
+    .filter(
+      (e): e is Extract<VadEvent, { type: "start" }> => e.type === "start",
+    );
 }
 function ends(emitted: Emitted[]): Array<Extract<VadEvent, { type: "end" }>> {
-  return emitted.map(e => e.event).filter((e): e is Extract<VadEvent, { type: "end" }> => e.type === "end");
+  return emitted
+    .map((e) => e.event)
+    .filter((e): e is Extract<VadEvent, { type: "end" }> => e.type === "end");
 }
 
 describe("createVad", () => {
@@ -47,17 +58,30 @@ describe("createVad", () => {
   });
 
   it("brackets a 1 s burst with one utterance whose onset is the first loud frame", () => {
-    const emitted = feed(createVad(), [...level(LEAD_IN, SILENCE), ...level(50, SPEECH), ...level(TAIL, SILENCE)]);
-    expect(starts(emitted)).toEqual([{ type: "start", id: 1, sample: LEAD_IN * FRAME }]);
+    const emitted = feed(createVad(), [
+      ...level(LEAD_IN, SILENCE),
+      ...level(50, SPEECH),
+      ...level(TAIL, SILENCE),
+    ]);
+    expect(starts(emitted)).toEqual([
+      { type: "start", id: 1, sample: LEAD_IN * FRAME },
+    ]);
     expect(ends(emitted)).toEqual([
-      { type: "end", id: 1, startSample: LEAD_IN * FRAME, endSample: (LEAD_IN + 50) * FRAME },
+      {
+        type: "end",
+        id: 1,
+        startSample: LEAD_IN * FRAME,
+        endSample: (LEAD_IN + 50) * FRAME,
+      },
     ]);
     // Confirmed 120 ms (6 frames) after the first loud frame, but timestamped back at it.
     expect(emitted[0].frame).toBe(LEAD_IN + 5);
     // Closed one hangover (35 frames) after the last loud frame.
     expect(emitted[1].frame).toBe(LEAD_IN + 50 + 34);
     const utterance = ends(emitted)[0];
-    expect(((utterance.endSample - utterance.startSample) / RATE) * 1000).toBe(1000);
+    expect(((utterance.endSample - utterance.startSample) / RATE) * 1000).toBe(
+      1000,
+    );
   });
 
   it("keeps two bursts 400 ms apart (under the hangover) in one utterance", () => {
@@ -70,7 +94,12 @@ describe("createVad", () => {
     ]);
     expect(starts(emitted)).toHaveLength(1);
     expect(ends(emitted)).toEqual([
-      { type: "end", id: 1, startSample: LEAD_IN * FRAME, endSample: (LEAD_IN + 70) * FRAME },
+      {
+        type: "end",
+        id: 1,
+        startSample: LEAD_IN * FRAME,
+        endSample: (LEAD_IN + 70) * FRAME,
+      },
     ]);
   });
 
@@ -82,10 +111,20 @@ describe("createVad", () => {
       ...level(25, SPEECH),
       ...level(TAIL, SILENCE),
     ]);
-    expect(starts(emitted).map(e => e.id)).toEqual([1, 2]);
+    expect(starts(emitted).map((e) => e.id)).toEqual([1, 2]);
     expect(ends(emitted)).toEqual([
-      { type: "end", id: 1, startSample: LEAD_IN * FRAME, endSample: (LEAD_IN + 25) * FRAME },
-      { type: "end", id: 2, startSample: (LEAD_IN + 75) * FRAME, endSample: (LEAD_IN + 100) * FRAME },
+      {
+        type: "end",
+        id: 1,
+        startSample: LEAD_IN * FRAME,
+        endSample: (LEAD_IN + 25) * FRAME,
+      },
+      {
+        type: "end",
+        id: 2,
+        startSample: (LEAD_IN + 75) * FRAME,
+        endSample: (LEAD_IN + 100) * FRAME,
+      },
     ]);
   });
 
@@ -95,7 +134,7 @@ describe("createVad", () => {
       ...level(1250, SPEECH), // 25 s
       ...level(TAIL, SILENCE),
     ]);
-    expect(starts(emitted).map(e => e.id)).toEqual([1, 2]);
+    expect(starts(emitted).map((e) => e.id)).toEqual([1, 2]);
     const [first, second] = ends(emitted);
     expect(first).toEqual({
       type: "end",
@@ -132,18 +171,31 @@ describe("createVad", () => {
   it("applies a lowered threshold from setOptions live", () => {
     const vad = createVad();
     const quietSpeech = 0.008; // under the 0.012 default, over a 0.004 override
-    expect(feed(vad, [...level(10, 0.0005), ...level(4, quietSpeech)])).toEqual([]);
+    expect(feed(vad, [...level(10, 0.0005), ...level(4, quietSpeech)])).toEqual(
+      [],
+    );
     vad.setOptions({ threshold: 0.004 });
     const emitted = feed(vad, level(20, quietSpeech), 14);
-    expect(starts(emitted)).toEqual([{ type: "start", id: 1, sample: 14 * FRAME }]);
+    expect(starts(emitted)).toEqual([
+      { type: "start", id: 1, sample: 14 * FRAME },
+    ]);
   });
 
   it("honours onsetMs, hangoverMs and a non-default sampleRate", () => {
     const vad = createVad({ onsetMs: 40, hangoverMs: 100, sampleRate: 8000 });
     const frame = (8000 * FRAME_MS) / 1000; // 160 samples
-    const emitted = feed(vad, [...level(LEAD_IN, SILENCE), ...level(3, SPEECH), ...level(10, SILENCE)]);
+    const emitted = feed(vad, [
+      ...level(LEAD_IN, SILENCE),
+      ...level(3, SPEECH),
+      ...level(10, SILENCE),
+    ]);
     expect(ends(emitted)).toEqual([
-      { type: "end", id: 1, startSample: LEAD_IN * frame, endSample: (LEAD_IN + 3) * frame },
+      {
+        type: "end",
+        id: 1,
+        startSample: LEAD_IN * frame,
+        endSample: (LEAD_IN + 3) * frame,
+      },
     ]);
     expect(emitted[0].frame).toBe(LEAD_IN + 1); // 40 ms = 2 frames to confirm
     expect(emitted[1].frame).toBe(LEAD_IN + 3 + 4); // 100 ms = 5 frames of silence to close
@@ -152,12 +204,20 @@ describe("createVad", () => {
   it("drops an open utterance on reset and never reuses an id", () => {
     const vad = createVad();
     const first = feed(vad, [...level(LEAD_IN, SILENCE), ...level(25, SPEECH)]);
-    expect(starts(first).map(e => e.id)).toEqual([1]);
+    expect(starts(first).map((e) => e.id)).toEqual([1]);
     expect(ends(first)).toEqual([]); // still open
     vad.reset();
-    const second = feed(vad, [...level(LEAD_IN, SILENCE), ...level(25, SPEECH), ...level(TAIL, SILENCE)], 1000);
-    expect(starts(second).map(e => e.id)).toEqual([2]);
-    expect(ends(second).map(e => e.id)).toEqual([2]);
+    const second = feed(
+      vad,
+      [
+        ...level(LEAD_IN, SILENCE),
+        ...level(25, SPEECH),
+        ...level(TAIL, SILENCE),
+      ],
+      1000,
+    );
+    expect(starts(second).map((e) => e.id)).toEqual([2]);
+    expect(ends(second).map((e) => e.id)).toEqual([2]);
   });
 
   it("exports the factory as the default export", () => {
@@ -177,7 +237,8 @@ const blobBytes = async (blob: Blob): Promise<ArrayBuffer> => {
   return await new Promise<ArrayBuffer>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("FileReader failed"));
     reader.readAsArrayBuffer(blob);
   });
 };
@@ -186,7 +247,9 @@ describe("encodeWav", () => {
   const readHeader = async (blob: Blob) => {
     const view = new DataView(await blobBytes(blob));
     const text = (offset: number, length: number) =>
-      String.fromCharCode(...Array.from({ length }, (_, i) => view.getUint8(offset + i)));
+      String.fromCharCode(
+        ...Array.from({ length }, (_, i) => view.getUint8(offset + i)),
+      );
     return { view, text };
   };
 
@@ -216,14 +279,9 @@ describe("encodeWav", () => {
     const { view } = await readHeader(blob);
     expect(view.getUint32(24, true)).toBe(8000);
     expect(view.getUint32(28, true)).toBe(16000);
-    expect([0, 1, 2, 3, 4, 5].map(i => view.getInt16(44 + i * 2, true))).toEqual([
-      0,
-      32767,
-      -32768,
-      Math.round(0.5 * 0x7fff),
-      32767,
-      -32768,
-    ]);
+    expect(
+      [0, 1, 2, 3, 4, 5].map((i) => view.getInt16(44 + i * 2, true)),
+    ).toEqual([0, 32767, -32768, Math.round(0.5 * 0x7fff), 32767, -32768]);
   });
 
   it("encodes an empty cut as a header-only WAV", async () => {
@@ -241,8 +299,14 @@ describe("createVad.reset", () => {
     vad.reset();
     // No lead-in this time: if reset re-seeded, these ten frames would seed the floor from the voice and the
     // whole take would be deaf.
-    const emitted = feed(vad, [...level(25, SPEECH), ...level(TAIL, SILENCE)], 1000);
-    expect(starts(emitted)).toEqual([{ type: "start", id: 1, sample: 1000 * FRAME }]);
+    const emitted = feed(
+      vad,
+      [...level(25, SPEECH), ...level(TAIL, SILENCE)],
+      1000,
+    );
+    expect(starts(emitted)).toEqual([
+      { type: "start", id: 1, sample: 1000 * FRAME },
+    ]);
     expect(ends(emitted)[0].endSample).toBe(1025 * FRAME);
   });
 });

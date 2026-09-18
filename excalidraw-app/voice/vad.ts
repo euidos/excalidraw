@@ -92,7 +92,11 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
     loudRun = 0;
   }
 
-  function openUtterance(sample: number, frameIndex: number, events: VadEvent[]): void {
+  function openUtterance(
+    sample: number,
+    frameIndex: number,
+    events: VadEvent[],
+  ): void {
     inSpeech = true;
     openId = nextId++;
     startSample = sample;
@@ -107,7 +111,12 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
     silentRun = 0;
     lastLoudFrame = -1;
     clearRun();
-    events.push({ type: "end", id: openId, startSample, endSample: Math.max(endSample, startSample) });
+    events.push({
+      type: "end",
+      id: openId,
+      startSample,
+      endSample: Math.max(endSample, startSample),
+    });
   }
 
   return {
@@ -133,11 +142,16 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
       const effective = Math.max(threshold, FLOOR_MULTIPLIER * noiseFloor);
       const loud = level > effective;
       // Only quiet frames outside an utterance are room tone; a pause mid-sentence is not.
-      if (!loud && !inSpeech) noiseFloor += FLOOR_ALPHA * (level - noiseFloor);
+      if (!loud && !inSpeech) {
+        noiseFloor += FLOOR_ALPHA * (level - noiseFloor);
+      }
 
       if (inSpeech && frameIndex * frameSamples - startSample >= maxSamples()) {
         // Force split: the frames up to here are one utterance, this frame starts the next one (if still loud).
-        closeUtterance(Math.min(lastLoudFrame + 1, frameIndex) * frameSamples, events);
+        closeUtterance(
+          Math.min(lastLoudFrame + 1, frameIndex) * frameSamples,
+          events,
+        );
         if (loud) {
           openUtterance(frameIndex * frameSamples, frameIndex, events);
           return events;
@@ -164,7 +178,9 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
       }
       // The onset is the FIRST loud frame, not the frame that confirmed it — otherwise every utterance loses its
       // first 120 ms, which is where the consonant lives.
-      if (++loudRun >= onsetFrames()) openUtterance(firstLoudFrame * frameSamples, frameIndex, events);
+      if (++loudRun >= onsetFrames()) {
+        openUtterance(firstLoudFrame * frameSamples, frameIndex, events);
+      }
       return events;
     },
 
@@ -177,10 +193,18 @@ export function createVad(opts: VadCreateOptions = {}): Vad {
     },
 
     setOptions(next: VadCreateOptions): void {
-      if (next.threshold !== undefined) threshold = next.threshold;
-      if (next.onsetMs !== undefined) onsetMs = next.onsetMs;
-      if (next.hangoverMs !== undefined) hangoverMs = next.hangoverMs;
-      if (next.maxUtteranceMs !== undefined) maxUtteranceMs = next.maxUtteranceMs;
+      if (next.threshold !== undefined) {
+        threshold = next.threshold;
+      }
+      if (next.onsetMs !== undefined) {
+        onsetMs = next.onsetMs;
+      }
+      if (next.hangoverMs !== undefined) {
+        hangoverMs = next.hangoverMs;
+      }
+      if (next.maxUtteranceMs !== undefined) {
+        maxUtteranceMs = next.maxUtteranceMs;
+      }
       if (next.sampleRate !== undefined) {
         sampleRate = next.sampleRate;
         frameSamples = Math.round((sampleRate * FRAME_MS) / 1000);

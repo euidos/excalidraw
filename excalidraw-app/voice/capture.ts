@@ -14,6 +14,8 @@
  * ended/muted, a context that will not resume — is pushed through `onMicChange` as well as being readable as
  * `.mic`.
  */
+import { createVad, type Vad, type VadEvent } from "./vad";
+
 import type {
   CaptureOptions,
   CreateVoiceCapture,
@@ -21,7 +23,6 @@ import type {
   VadOptions,
   VoiceCapture,
 } from "./contracts-capture";
-import { createVad, type Vad, type VadEvent } from "./vad";
 
 const DEFAULT_SAMPLE_RATE = 16000;
 const DEFAULT_BUFFER_SECONDS = 300;
@@ -84,7 +85,9 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const buffer = new ArrayBuffer(44 + bytes);
   const view = new DataView(buffer);
   const ascii = (offset: number, text: string) => {
-    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    for (let i = 0; i < text.length; i++) {
+      view.setUint8(offset + i, text.charCodeAt(i));
+    }
   };
   ascii(0, "RIFF");
   view.setUint32(4, 36 + bytes, true);
@@ -101,15 +104,23 @@ export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   view.setUint32(40, bytes, true);
   for (let i = 0; i < samples.length; i++) {
     const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), true);
+    view.setInt16(
+      44 + i * 2,
+      Math.round(s < 0 ? s * 0x8000 : s * 0x7fff),
+      true,
+    );
   }
   return new Blob([buffer], { type: "audio/wav" });
 }
 
 function micStateFor(err: unknown): MicState {
   const name = (err as { name?: string } | null)?.name;
-  if (name === "NotAllowedError" || name === "SecurityError") return "denied";
-  if (name === "NotFoundError" || name === "DevicesNotFoundError") return "missing";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "denied";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "missing";
+  }
   return "error";
 }
 
@@ -123,13 +134,20 @@ function constraintsFor(deviceId: string): MediaStreamConstraints {
     noiseSuppression: true,
     autoGainControl: true,
   };
-  if (deviceId) audio.deviceId = { exact: deviceId };
+  if (deviceId) {
+    audio.deviceId = { exact: deviceId };
+  }
   return { audio };
 }
 
-export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): VoiceCapture => {
+export const createVoiceCapture: CreateVoiceCapture = (
+  opts?: CaptureOptions,
+): VoiceCapture => {
   const outRate = opts?.sampleRate ?? DEFAULT_SAMPLE_RATE;
-  const capacity = Math.max(1, Math.round((opts?.bufferSeconds ?? DEFAULT_BUFFER_SECONDS) * outRate));
+  const capacity = Math.max(
+    1,
+    Math.round((opts?.bufferSeconds ?? DEFAULT_BUFFER_SECONDS) * outRate),
+  );
   const frameSamples = Math.max(1, Math.round((outRate * FRAME_MS) / 1000));
 
   const ring = new Float32Array(capacity);
@@ -201,7 +219,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   }
 
   function setMic(next: MicState, detail?: string): void {
-    if (next === mic && detail === undefined) return;
+    if (next === mic && detail === undefined) {
+      return;
+    }
     mic = next;
     capture.onMicChange?.(next, detail);
   }
@@ -221,7 +241,8 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
     const rounded = Math.round(ratio);
     // Integer ratios (48 k → 16 k is the common one) average N input samples: cheaper and it low-passes,
     // where plain decimation would alias room noise into the speech band.
-    integerRatio = Math.abs(ratio - rounded) < 1e-6 && rounded >= 1 ? rounded : 0;
+    integerRatio =
+      Math.abs(ratio - rounded) < 1e-6 && rounded >= 1 ? rounded : 0;
     accSum = 0;
     accCount = 0;
     prevSample = 0;
@@ -237,7 +258,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
 
   function resampleInto(input: Float32Array): void {
     if (integerRatio === 1) {
-      for (let i = 0; i < input.length; i++) writeSample(input[i]);
+      for (let i = 0; i < input.length; i++) {
+        writeSample(input[i]);
+      }
       return;
     }
     if (integerRatio > 1) {
@@ -251,7 +274,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
       }
       return;
     }
-    if (input.length === 0) return;
+    if (input.length === 0) {
+      return;
+    }
     if (!havePrev) {
       prevSample = input[0];
       havePrev = true;
@@ -292,9 +317,13 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   }
 
   function emitLevel(): void {
-    if (!active || levelFrames === 0) return;
+    if (!active || levelFrames === 0) {
+      return;
+    }
     const t = now();
-    if (t - lastLevelAt < LEVEL_INTERVAL_MS) return;
+    if (t - lastLevelAt < LEVEL_INTERVAL_MS) {
+      return;
+    }
     lastLevelAt = t;
     const rms = Math.sqrt(levelSumSq / levelFrames);
     levelSumSq = 0;
@@ -308,7 +337,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
     for (const event of events) {
       if (event.type === "start") {
         // Speech that began before the user armed belongs to nobody; the controller only ever sees takes.
-        if (!active) continue;
+        if (!active) {
+          continue;
+        }
         const onsetMs = sampleToMs(event.sample);
         open = { id: event.id, onsetMs };
         capture.onUtteranceStart?.({ id: event.id, onsetMs });
@@ -317,18 +348,27 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
         // disagree by a few ms would make the controller's pre-roll arithmetic non-monotonic.
         const { id, onsetMs } = open;
         open = null;
-        capture.onUtteranceEnd?.({ id, onsetMs, endMs: sampleToMs(event.endSample) });
+        capture.onUtteranceEnd?.({
+          id,
+          onsetMs,
+          endMs: sampleToMs(event.endSample),
+        });
       }
       // An end with no matching start is either pre-arm speech or an utterance stop() already closed by hand.
     }
   }
 
   function onChunk(input: Float32Array): void {
-    if (disposed) return;
+    if (disposed) {
+      return;
+    }
     resampleInto(input);
     // Timestamp the *end* of the chunk: sample N was captured ~now, so sample 0 was captured offset ms ago.
     const measured = now() - (totalSamplesWritten * 1000) / outRate;
-    offsetMs = offsetChunks < OFFSET_WARMUP_CHUNKS ? measured : offsetMs + OFFSET_ALPHA * (measured - offsetMs);
+    offsetMs =
+      offsetChunks < OFFSET_WARMUP_CHUNKS
+        ? measured
+        : offsetMs + OFFSET_ALPHA * (measured - offsetMs);
     offsetChunks++;
     drainFrames();
   }
@@ -346,16 +386,25 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
     try {
       if (context.audioWorklet) {
         if (!workletUrl) {
-          workletUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "application/javascript" }));
+          workletUrl = URL.createObjectURL(
+            new Blob([WORKLET_SOURCE], { type: "application/javascript" }),
+          );
         }
         await context.audioWorklet.addModule(workletUrl);
-        const node = new AudioWorkletNode(context, WORKLET_NAME, { numberOfInputs: 1, numberOfOutputs: 1 });
-        node.port.onmessage = (event: MessageEvent) => onChunk(new Float32Array(event.data as ArrayBuffer));
+        const node = new AudioWorkletNode(context, WORKLET_NAME, {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+        });
+        node.port.onmessage = (event: MessageEvent) =>
+          onChunk(new Float32Array(event.data as ArrayBuffer));
         worklet = node;
         usedWorklet = true;
       }
     } catch (err) {
-      console.warn("voice: AudioWorklet unavailable, falling back to ScriptProcessor", err);
+      console.warn(
+        "voice: AudioWorklet unavailable, falling back to ScriptProcessor",
+        err,
+      );
     }
 
     if (!usedWorklet) {
@@ -395,7 +444,7 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   }
 
   function stopStream(): void {
-    stream?.getTracks().forEach(track => {
+    stream?.getTracks().forEach((track) => {
       track.onended = null;
       track.onmute = null;
       track.onunmute = null;
@@ -413,11 +462,15 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
 
   /** Polls a resuming context: "ok" the moment it runs, the error only after the whole window has passed. */
   function watchResume(context: AudioContext): void {
-    if (resumeTimer) clearTimeout(resumeTimer);
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+    }
     const deadline = now() + RESUME_WINDOW_MS;
     const poll = (): void => {
       resumeTimer = null;
-      if (disposed || ctx !== context) return;
+      if (disposed || ctx !== context) {
+        return;
+      }
       if (context.state === "running") {
         setMic("ok");
         return;
@@ -441,13 +494,17 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   async function prepare(deviceId?: string): Promise<MicState> {
     const wanted = deviceId ?? "";
     requestedDeviceId = wanted;
-    if (disposed) return mic;
+    if (disposed) {
+      return mic;
+    }
     const cachedCtx = ctx;
     if (stream && streamDeviceId === wanted && liveTrack() && cachedCtx) {
       // Only an "ok" cache confirms itself. Any other state would otherwise be self-sealing: a mic that errored
       // once (a mute, a slow resume) could never be re-armed for the lifetime of the page, which on the wall
       // panel means the tool is dead until someone reloads it.
-      if (mic === "ok") return mic;
+      if (mic === "ok") {
+        return mic;
+      }
       if (cachedCtx.state === "running") {
         setMic("ok");
         return mic;
@@ -455,20 +512,29 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
       teardownGraph();
       stopStream();
     }
-    if (preparing) return preparing;
+    if (preparing) {
+      return preparing;
+    }
 
     preparing = (async (): Promise<MicState> => {
-      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      if (
+        typeof navigator === "undefined" ||
+        !navigator.mediaDevices?.getUserMedia
+      ) {
         setMic("error", "no microphone API in this browser");
         return mic;
       }
       let media: MediaStream;
       let detail: string | undefined;
       try {
-        media = await navigator.mediaDevices.getUserMedia(constraintsFor(wanted));
+        media = await navigator.mediaDevices.getUserMedia(
+          constraintsFor(wanted),
+        );
       } catch (err) {
         const name = errorName(err);
-        const retryable = wanted !== "" && (name === "OverconstrainedError" || name === "NotFoundError");
+        const retryable =
+          wanted !== "" &&
+          (name === "OverconstrainedError" || name === "NotFoundError");
         if (!retryable) {
           setMic(micStateFor(err), (err as Error | null)?.message);
           return mic;
@@ -478,19 +544,24 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
           media = await navigator.mediaDevices.getUserMedia(constraintsFor(""));
           detail = "fallback to default microphone";
         } catch (fallbackErr) {
-          setMic(micStateFor(fallbackErr), (fallbackErr as Error | null)?.message);
+          setMic(
+            micStateFor(fallbackErr),
+            (fallbackErr as Error | null)?.message,
+          );
           return mic;
         }
       }
       if (disposed) {
-        media.getTracks().forEach(track => track.stop());
+        media.getTracks().forEach((track) => track.stop());
         return mic;
       }
       stopStream();
       stream = media;
       streamDeviceId = wanted;
       const track = media.getAudioTracks()[0];
-      if (track) watchTrack(track);
+      if (track) {
+        watchTrack(track);
+      }
       try {
         await buildGraph(media);
       } catch (err) {
@@ -507,10 +578,14 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   }
 
   async function start(): Promise<void> {
-    if (disposed) return;
+    if (disposed) {
+      return;
+    }
     if (mic !== "ok") {
       const state = await prepare(requestedDeviceId);
-      if (state !== "ok") return; // the failure already went out through onMicChange
+      if (state !== "ok") {
+        return;
+      } // the failure already went out through onMicChange
     }
     const context = ctx;
     if (context && context.state === "suspended") {
@@ -521,7 +596,9 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
       }
       watchResume(context);
     }
-    if (active) return;
+    if (active) {
+      return;
+    }
     // Drops whatever the always-running VAD had open on the idle room (it keeps the measured floor), so a take
     // never inherits half an utterance: the first onset of this take is at most one onsetMs away.
     vad.reset();
@@ -534,12 +611,18 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
   }
 
   async function stop(): Promise<void> {
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     active = false;
     if (open) {
       const pending = open;
       open = null;
-      capture.onUtteranceEnd?.({ id: pending.id, onsetMs: pending.onsetMs, endMs: now() });
+      capture.onUtteranceEnd?.({
+        id: pending.id,
+        onsetMs: pending.onsetMs,
+        endMs: now(),
+      });
     }
     // Not vad.reset(): the machine keeps running on the idle room so its floor stays warm for the next take.
     // The utterance it still thinks is open closes into handleVadEvents, which drops it (no matching `open`).
@@ -547,10 +630,15 @@ export const createVoiceCapture: CreateVoiceCapture = (opts?: CaptureOptions): V
 
   function wav(fromMs: number, toMs: number): Blob {
     const oldest = Math.max(0, totalSamplesWritten - capacity);
-    const from = Math.min(Math.max(sampleAt(fromMs), oldest), totalSamplesWritten);
+    const from = Math.min(
+      Math.max(sampleAt(fromMs), oldest),
+      totalSamplesWritten,
+    );
     const to = Math.min(Math.max(sampleAt(toMs), from), totalSamplesWritten);
     const out = new Float32Array(to - from);
-    for (let i = 0; i < out.length; i++) out[i] = ring[(from + i) % capacity];
+    for (let i = 0; i < out.length; i++) {
+      out[i] = ring[(from + i) % capacity];
+    }
     return encodeWav(out, outRate);
   }
 

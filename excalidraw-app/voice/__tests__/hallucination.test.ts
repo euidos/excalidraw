@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { HALLUCINATION_BLOCKLIST, isHallucination } from "../contracts-capture";
 
 describe("isHallucination — what whisper invents out of near-silence", () => {
@@ -51,7 +52,17 @@ describe("isHallucination — what whisper invents out of near-silence", () => {
 
   // The fuzzy arm used to apply to every entry, so the 3-character entries ate ordinary words: a shape labelled
   // "young" or "뉴스룸" came back blank with no ⚠, no retry and nothing in the status.
-  it.each([["young"], ["youth"], ["your"], ["yours"], ["payout"], ["goodbye"], ["뉴스룸"], ["속보 뉴스"], ["뉴스 데스크"]])(
+  it.each([
+    ["young"],
+    ["youth"],
+    ["your"],
+    ["yours"],
+    ["payout"],
+    ["goodbye"],
+    ["뉴스룸"],
+    ["속보 뉴스"],
+    ["뉴스 데스크"],
+  ])(
     "keeps the short real label %j that a short blocklist entry is a substring of",
     (text) => {
       expect(isHallucination(text)).toBe(false);
@@ -59,10 +70,14 @@ describe("isHallucination — what whisper invents out of near-silence", () => {
   );
 
   it("still drops the short entries themselves, exactly", () => {
-    for (const text of ["you", "You.", "bye", "뉴스", " 뉴스 "]) expect(isHallucination(text)).toBe(true);
+    for (const text of ["you", "You.", "bye", "뉴스", " 뉴스 "]) {
+      expect(isHallucination(text)).toBe(true);
+    }
   });
 
   it("every blocklist entry is itself caught", () => {
-    for (const entry of HALLUCINATION_BLOCKLIST) expect(isHallucination(entry)).toBe(true);
+    for (const entry of HALLUCINATION_BLOCKLIST) {
+      expect(isHallucination(entry)).toBe(true);
+    }
   });
 });

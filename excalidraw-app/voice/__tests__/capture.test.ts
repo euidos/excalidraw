@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createVoiceCapture } from "../capture";
+
 import type { MicState } from "../contracts-capture";
 
 class FakeTrack {
@@ -29,7 +30,11 @@ class FakeStream {
   }
 }
 
-const node = () => ({ connect: () => undefined, disconnect: () => undefined, onaudioprocess: null });
+const node = () => ({
+  connect: () => undefined,
+  disconnect: () => undefined,
+  onaudioprocess: null,
+});
 
 class FakeAudioContext {
   static created: FakeAudioContext[] = [];
@@ -48,8 +53,16 @@ class FakeAudioContext {
   createMediaStreamSource(): ReturnType<typeof node> {
     return node();
   }
-  createGain(): { gain: { value: number }; connect: () => void; disconnect: () => void } {
-    return { gain: { value: 0 }, connect: () => undefined, disconnect: () => undefined };
+  createGain(): {
+    gain: { value: number };
+    connect: () => void;
+    disconnect: () => void;
+  } {
+    return {
+      gain: { value: 0 },
+      connect: () => undefined,
+      disconnect: () => undefined,
+    };
   }
   /** Kept so a test can hand the capture a chunk of PCM the way the real node would. */
   processor: ReturnType<typeof node> | null = null;
@@ -64,7 +77,9 @@ class FakeAudioContext {
     }
     // The HAL answers eventually; the caller's await resolves long before the state flips.
     setTimeout(() => {
-      if (this.state === "suspended") this.state = "running";
+      if (this.state === "suspended") {
+        this.state = "running";
+      }
     }, this.resumeAfterMs);
   }
   async close(): Promise<void> {
@@ -79,7 +94,12 @@ interface Rig {
   resumeAfterMs: number;
 }
 
-const rig: Rig = { streams: [], calls: 0, nextState: "running", resumeAfterMs: 0 };
+const rig: Rig = {
+  streams: [],
+  calls: 0,
+  nextState: "running",
+  resumeAfterMs: 0,
+};
 
 function install(): void {
   rig.streams = [];
@@ -100,7 +120,9 @@ function install(): void {
       },
     },
   });
-  (globalThis as unknown as { AudioContext: unknown }).AudioContext = class extends FakeAudioContext {
+  (
+    globalThis as unknown as { AudioContext: unknown }
+  ).AudioContext = class extends FakeAudioContext {
     constructor() {
       super(rig.nextState);
       this.resumeAfterMs = rig.resumeAfterMs;
@@ -108,13 +130,18 @@ function install(): void {
   };
 }
 
-const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One 2048-sample chunk of constant-amplitude audio: RMS is exactly `amplitude`, before and after resampling. */
 function feed(amplitude: number, chunks = 1): void {
   const ctx = FakeAudioContext.created.at(-1)!;
   const data = new Float32Array(2048).fill(amplitude);
-  const handler = (ctx.processor as unknown as { onaudioprocess: ((e: unknown) => void) | null }).onaudioprocess;
+  const handler = (
+    ctx.processor as unknown as {
+      onaudioprocess: ((e: unknown) => void) | null;
+    }
+  ).onaudioprocess;
   for (let i = 0; i < chunks; i++) {
     handler?.({ inputBuffer: { getChannelData: () => data } });
   }
@@ -174,7 +201,9 @@ describe("start() — a slow resume is not an autoplay block", () => {
     await capture.start();
     await wait(1400);
 
-    expect(capture.mic, "the cold HAL landed; the tool stays armable").toBe("ok");
+    expect(capture.mic, "the cold HAL landed; the tool stays armable").toBe(
+      "ok",
+    );
     expect(seen, "no spurious error on the way").toEqual(["ok"]);
     expect(capture.active).toBe(true);
   });
@@ -210,7 +239,10 @@ describe("N11(a) — an audio context that stays suspended past the window and t
     await capture.prepare();
     await capture.start();
     await wait(3_400);
-    expect(capture.mic, "the window elapsed with the context still suspended").toBe("error");
+    expect(
+      capture.mic,
+      "the window elapsed with the context still suspended",
+    ).toBe("error");
 
     await capture.stop();
     expect(capture.active).toBe(false);
@@ -221,7 +253,10 @@ describe("N11(a) — an audio context that stays suspended past the window and t
 
     expect(capture.mic, "the error cleared with its cause").toBe("ok");
     expect(capture.active, "and the take actually started").toBe(true);
-    expect(rig.calls, "no new getUserMedia: no permission prompt, no reload").toBe(1);
+    expect(
+      rig.calls,
+      "no new getUserMedia: no permission prompt, no reload",
+    ).toBe(1);
     expect(seen).toEqual(["ok", "error", "ok"]);
   }, 15_000);
 });
@@ -241,7 +276,9 @@ describe("N11(b) — a muted track", () => {
     expect(seen.at(-1)).toEqual(["error", "microphone muted"]);
 
     track.onunmute?.();
-    expect(capture.mic, "the mute ended; the tool must not stay refused").toBe("ok");
+    expect(capture.mic, "the mute ended; the tool must not stay refused").toBe(
+      "ok",
+    );
 
     await capture.start();
     expect(capture.active).toBe(true);
@@ -276,6 +313,9 @@ describe("N12 — the number the meter is drawn from", () => {
     // 6 chunks is ~2000 output samples per chunk-triple: enough 20 ms frames to seed the floor from the room.
     feed(0.004, 6);
     expect(capture.noiseFloor, "the room, in RMS").toBeCloseTo(0.004, 3);
-    expect(levels[0], "and the meter is fed the same unit").toBeCloseTo(0.004, 3);
+    expect(levels[0], "and the meter is fed the same unit").toBeCloseTo(
+      0.004,
+      3,
+    );
   });
 });
