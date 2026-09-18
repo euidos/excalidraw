@@ -27,6 +27,7 @@ import {
   drawStroke,
   elements,
   ellipsePath,
+  ensureLeadInClip,
   ensureSilenceClip,
   evidence,
   fixture,
@@ -52,6 +53,9 @@ import {
   waitForVoiceReady,
   waitUntilWall,
   watchMicGlyph,
+  watchWords,
+  readWords,
+  stopWords,
   type Pt,
   type SceneEl,
 } from "./helpers";
@@ -61,10 +65,25 @@ const PRE_ROLL_MS = DEFAULT_SETTINGS.preRollMs;
 
 const THREE = `${fixture("three-utterances.wav")}%noloop`;
 const EN_SHORT = `${fixture("en-short.wav")}%noloop`;
+const KO_SHORT = `${fixture("ko-short.wav")}%noloop`;
+/**
+ * The long Korean fixture with a second of silence in front (helpers.ensureLeadInClip): the VAD seeds its noise
+ * floor from the first audio it hears, so a clip that opens on a loud syllable makes it deaf for seconds and its
+ * 5.4 s of speech arrives as one 0.5 s utterance. Round 5's preview needs a LONG OPEN utterance, so it gets the
+ * lead-in a real room would give it.
+ */
+const koLongOpen = (): string => `${ensureLeadInClip("ko-long.wav", 1200)}%noloop`;
 
-/** "⚠ STT" is a transcript-shaped text that is not a transcript; keep it out of the transcript assertions. */
+
+/**
+ * The COMMITTED transcripts. Two kinds of text look like one and are not: "⚠ STT" (a failure report) and a round-5
+ * interim preview (the words so far, stamped `customData.voiceInterim`, overwritten by the commit). Every assertion
+ * about "the words that landed" reads this, so a preview can never be mistaken for a take that finished.
+ */
 const finalTexts = (els: SceneEl[]): SceneEl[] =>
-  transcriptTexts(els).filter((el) => !(el.text ?? "").includes("STT"));
+  transcriptTexts(els).filter(
+    (el) => !(el.text ?? "").includes("STT") && el.customData?.voiceInterim !== true,
+  );
 /** Committed text is WRAPPED text: "fellow\nAmericans" is the same sentence, so word assertions read it flat. */
 const flat = (text: string): string => text.replace(/\s+/g, " ").trim();
 const joined = (els: SceneEl[]): string => finalTexts(els).map((el) => flat(el.text ?? "")).join(" | ");
@@ -1398,6 +1417,203 @@ test.describe("voice areas", () => {
       expect(legacy!.boundElements ?? [], "the ghost is unbound").toHaveLength(0);
       expect(byId("legacy-text-000000001"), "the ghost text is gone").toBeUndefined();
       await evidence(page, "r3-ghost-sweep");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  /**
+   * ROUND 5 — the founder's complaint, measured on the real surface.
+   *
+   *   "I wish speech recognition didn't make you wait until after you finish drawing the region. Instead, it
+   *    should happen at the same time while you're selecting the area."
+   *
+   * The cause was structural: the STT request was only ever sent from the assignment path, and that path is held
+   * by the pre-roll window AND by the pen-down flush barrier (gate N2e). So the whole GPU round trip was paid
+   * after pen-up. These three cases measure the two halves separately — the words arrive the instant the region
+   * exists (R5a), they start appearing before the speaker has even stopped (R5b), and a preview shown in the
+   * region the pre-roll had not yet decided against is given back (R5c).
+   */
+  test("R5a speak-then-draw lands the instant the region exists", async () => {
+    const { browser, page } = await launchWithClip(KO_SHORT);
+    try {
+      await recordUtterances(page);
+      const t0 = await armHold(page);
+
+      // The rhythm the complaint describes: the label is spoken, and the region is drawn around it while the words
+      // are still being said. The pen keeps moving — a careful oval traced on a wall panel — until the transcript
+      // is in hand, which is the state the whole round is about: the words waiting for the region rather than the
+      // region waiting for the words. Written as a poll rather than a tuned sleep so the gate does not depend on
+      // the server's round trip of the day (measured 0.6–1.7 s over the tailnet).
+      await waitUntilWall(page, t0, 500);
+      await watchWords(page);
+      const path = oval({ x: 700, y: 450 }, 12);
+      await page.mouse.move(path[0]!.x, path[0]!.y);
+      await page.mouse.down();
+      const deadline = Date.now() + 20_000;
+      let step = 1;
+      let inHand: Awaited<ReturnType<typeof status>> | null = null;
+      while (Date.now() < deadline) {
+        const p = path[step % path.length]!;
+        step += 1;
+        await page.mouse.move(p.x, p.y);
+        await page.waitForTimeout(90);
+        const now = await status(page);
+        if (now.lastSttLatencyMs !== undefined && now.pending === 0) {
+          inHand = now;
+          break;
+        }
+      }
+      expect(inHand, "the transcript came back while the pen was still on the panel").not.toBeNull();
+      expect(inHand!.completed, "and nothing is on the canvas yet: the region is not finished").toBe(0);
+      expect(step, `the stroke was still being drawn after ${step} samples`).toBeGreaterThan(2);
+      await page.mouse.up();
+
+      // THE MEASUREMENT: pen-up → the words on the canvas, both timestamps taken inside the page.
+      await expect.poll(async () => (await readWords(page)).committed !== null, { timeout: 30_000 }).toBe(true);
+      const words = await readWords(page);
+      await stopWords(page);
+      const penUpToWords = words.committed!.at - words.upAt;
+      const s = await status(page);
+      const seen = await seenUtterances(page);
+      console.log(
+        `[R5a] pen-up -> words: ${penUpToWords} ms | STT round trip: ${Math.round(s.lastSttLatencyMs ?? 0)} ms` +
+          ` | utterance ${seen[0]?.onsetMs}..${seen[0]?.endMs} (capture clock) | "${words.committed!.text}"`,
+      );
+      expect(words.upAt, "the pointer-up was seen inside the page").toBeGreaterThan(0);
+      expect(s.lastSttLatencyMs, "the round trip really happened").toBeGreaterThan(50);
+      // Before round 5 this was the round trip itself plus the conversion (~1 s measured); now it is the
+      // conversion alone, because the transcript was already in hand when the pen came up.
+      expect(
+        penUpToWords,
+        `pen-up -> words ${penUpToWords} ms must not contain the ${Math.round(s.lastSttLatencyMs ?? 0)} ms round trip`,
+      ).toBeLessThanOrEqual(400);
+
+      await releaseHold(page);
+      const els = await elements(page);
+      expect(markers(els).length, "the region marker left with its transcript").toBe(0);
+      expect(finalTexts(els).length, "exactly one transcript on the canvas").toBe(1);
+      expect(finalTexts(els)[0]!.text, "and it is the Korean label, not an orphan somewhere else").toMatch(/회의|안건|정리/);
+      expect(s.orphans, "the words went into the region, not to the pen origin").toBe(0);
+      await evidence(page, "r5a-lands-when-the-region-exists");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("R5b interim text appears while still speaking", async () => {
+    const { browser, page } = await launchWithClip(koLongOpen());
+    try {
+      await recordUtterances(page);
+      const t0 = await armHold(page);
+      await watchWords(page);
+      // Region first: this case is about WHEN the words appear, not about which region gets them.
+      const path = oval({ x: 700, y: 430 }, 16);
+      const region = sceneBBox(await transform(page), path);
+      await drawStroke(page, path, { stepMs: 14 });
+
+      // ko-long is one 5.4 s utterance, so a preview has time to come back long before the VAD closes it.
+      await expect.poll(async () => (await readWords(page)).interim !== null, { timeout: 30_000 }).toBe(true);
+      const shown = (await readWords(page)).interim!;
+      console.log(
+        `[R5b] interim at capture ${Math.round(shown.captureNow)} ms, speaking=${shown.speaking},` +
+          ` opacity=${shown.opacity}: "${shown.text}"`,
+      );
+      expect(shown.speaking, "the founder is still talking when the words show up").toBe(true);
+      expect(shown.text.length, "and they are words, not a placeholder dot").toBeGreaterThan(0);
+      expect(shown.opacity, "drawn faint, so it reads as not settled yet").toBeLessThan(100);
+
+      const pendingEls = await elements(page);
+      const preview = texts(pendingEls).find((el) => el.customData?.voiceInterim === true)!;
+      expect(preview, "the preview is stamped, so a reload sweeps it").toBeTruthy();
+      expect(markers(pendingEls).length, "the region marker is still there: the take is not over").toBe(1);
+      await evidence(page, "r5b-interim-while-speaking");
+
+      await waitUntilWall(page, t0, 9_500);
+      await releaseHold(page);
+      await settled(page, 1);
+
+      const seen = await seenUtterances(page);
+      expect(
+        shown.captureNow,
+        `the preview (${Math.round(shown.captureNow)}) appeared before the utterance ended (${seen[0]?.endMs})`,
+      ).toBeLessThan(seen[0]!.endMs!);
+
+      const els = await elements(page);
+      const committed = textIn(els, region, 4)!;
+      expect(committed, "the final transcript replaced the preview").toBeTruthy();
+      expect(committed.id, "in the very same element").toBe(preview.id);
+      expect(committed.customData?.voiceInterim, "with the interim stamp cleared").toBeUndefined();
+      expect(committed.text!.trim().length).toBeGreaterThan(0);
+      expect(markers(els).length, "and the marker is gone").toBe(0);
+      await evidence(page, "r5b-final-replaces-interim");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test("R5c provisional region corrected by the final assignment", async () => {
+    /**
+     * HARNESS-BENT PARAMETERS, named on purpose (RETRO vocabulary). `interimMs` is dropped to 400 and `preRollMs`
+     * raised to 6000 because at the shipped defaults this case is UNREACHABLE: the pre-roll window closes 1.5 s
+     * after the onset, and the measured round trip (~1.6 s over the tailnet) cannot put a preview on the canvas and
+     * still leave the founder time to draw the region they actually meant. So at defaults the provisional region is
+     * almost always the final one — which is both the reason the revert path needs a gate and the reason the gate
+     * needs bent settings to exist.
+     */
+    const { browser, page } = await launchWithClip(koLongOpen(), {
+      settings: { interimMs: 400, preRollMs: 6000 },
+    });
+    try {
+      await recordUtterances(page);
+      const t0 = await armHold(page);
+      const view = await transform(page);
+
+      // Region A is drawn first, so it is the only candidate while the speech starts: the preview goes there.
+      const pathA = oval({ x: 400, y: 260 }, 10);
+      const boxA = sceneBBox(view, pathA);
+      await drawStroke(page, pathA, { stepMs: 12 });
+      await watchWords(page);
+      await expect.poll(async () => (await readWords(page)).interim !== null, { timeout: 30_000 }).toBe(true);
+      const previewEls = await elements(page);
+      const previewA = texts(previewEls).find((el) => el.customData?.voiceInterim === true)!;
+      expect(insideBox(previewA, boxA, 4), "the preview borrowed region A").toBe(true);
+      console.log(`[R5c] preview in region A: "${previewA.text}"`);
+      await evidence(page, "r5c-preview-in-region-a");
+
+      // Then the region the founder actually meant, still inside the (bent) pre-roll window: assign.ts gives the
+      // words to the LATER stroke, so A has to be handed back exactly as it was found.
+      const pathB = oval({ x: 1100, y: 600 }, 10);
+      const boxB = sceneBBox(view, pathB);
+      await drawStroke(page, pathB, { stepMs: 12 });
+
+      // Still ARMED: region A is examined before the disarm sweep gets to it, because "a region nobody spoke into"
+      // is removed at the end of the take (round 4c) and that would hide whether it had been handed back intact.
+      // `wordsIn` reads the COMMITTED texts only (finalTexts skips the interim stamp), so this waits for the final
+      // transcript in B and not for the preview that moved there when B became the provisional owner.
+      await expect
+        .poll(async () => wordsIn(await elements(page), boxB, 4), { timeout: 40_000 })
+        .toMatch(/회의|목표|음성|화이트보드|인식/);
+      const els = await elements(page);
+      console.log(
+        `[R5c] texts: ${texts(els)
+          .map((el) => `"${flat(el.text ?? "")}"@${Math.round(el.x)},${Math.round(el.y)}`)
+          .join(" ")} | A=${JSON.stringify(boxA)} B=${JSON.stringify(boxB)}`,
+      );
+      expect(textIn(els, boxA, 4), "region A kept none of the words").toBeUndefined();
+      const leftA = texts(els).find((el) => insideBox(el, boxA, 8));
+      expect(leftA, "region A still has its own text element").toBeTruthy();
+      expect(isPlaceholder(leftA!), "…back to the animated dot, not half a sentence").toBe(true);
+      expect(leftA!.customData?.voiceInterim, "with the interim stamp cleared").toBeUndefined();
+      expect(markers(els).length, "and region A is still on the canvas: it is the founder's until the take ends").toBe(1);
+      await evidence(page, "r5c-region-a-reverted");
+
+      await waitUntilWall(page, t0, 10_500);
+      await releaseHold(page);
+      await settled(page, 1);
+      const after = await elements(page);
+      expect(markers(after).length, "the disarm then sweeps the region nothing was said into").toBe(0);
+      expect(finalTexts(after).length, "one transcript on the canvas, in region B").toBe(1);
     } finally {
       await browser.close();
     }

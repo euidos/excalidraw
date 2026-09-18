@@ -33,7 +33,7 @@ import type {
   FontFamilyValues,
   StrokeStyle,
 } from "@excalidraw/excalidraw/element/types";
-import { VOICE_FAILED_CUSTOM_DATA, VOICE_REGION_CUSTOM_DATA } from "./contracts";
+import { VOICE_FAILED_CUSTOM_DATA, VOICE_INTERIM_CUSTOM_DATA, VOICE_REGION_CUSTOM_DATA } from "./contracts";
 import type {
   FitModule,
   FitOptions,
@@ -60,6 +60,11 @@ const MARKER_OPACITY = 60;
 const MARKER_STROKE_WIDTH = 1;
 const FAILED_FONT_SIZE = 14;
 const FAILED_COLOR = "#c92a2a";
+/**
+ * How solid an INTERIM transcript is drawn. It has to read as "not settled yet" from across the room while still
+ * being legible, and it must never be mistaken for the committed words next to it (round 5).
+ */
+const INTERIM_OPACITY = 45;
 /** Guard rails so a corrupt settings value can never produce a NaN-sized element. */
 const FONT_SIZE_CEILING = 400;
 
@@ -200,12 +205,23 @@ const stamp = (el: ExcalidrawElement): ExcalidrawElement =>
   newElementWith(el, { customData: { ...el.customData, ...VOICE_REGION_CUSTOM_DATA } });
 
 /**
- * The `customData` a take's TEXT carries: the failure stamp while it shows "⚠ STT", nothing once words have landed.
+ * The `customData` a take's TEXT carries: the failure stamp while it shows "⚠ STT", the interim stamp while it
+ * shows words that are still being spoken, and NEITHER once the transcript has landed. Both stamps exist so that
+ * `persist.ts` can sweep a reload's litter without reading text content, and both are stripped unconditionally
+ * here: a commit after a failed retry, or after an interim preview, must leave a clean element behind or the next
+ * reload would eat the founder's words.
  * Computed as part of the one patch that writes the text, so the version counter still bumps exactly once.
  */
-function textCustomData(el: ExcalidrawElement, failed: boolean): Record<string, unknown> {
-  const { voiceFailed: _was, ...rest } = (el.customData ?? {}) as Record<string, unknown>;
-  return failed ? { ...rest, ...VOICE_FAILED_CUSTOM_DATA } : rest;
+function textCustomData(
+  el: ExcalidrawElement,
+  stamps: { failed?: boolean; interim?: boolean } = {},
+): Record<string, unknown> {
+  const { voiceFailed: _f, voiceInterim: _i, ...rest } = (el.customData ?? {}) as Record<string, unknown>;
+  return {
+    ...rest,
+    ...(stamps.failed ? VOICE_FAILED_CUSTOM_DATA : {}),
+    ...(stamps.interim ? VOICE_INTERIM_CUSTOM_DATA : {}),
+  };
 }
 
 /**
@@ -719,7 +735,7 @@ function commitText(
     const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
     const label = labelOf(style, style.fontFamily);
     // Words landing clear the failure stamp in the same patch, so a reload's ghost sweep never eats a transcript.
-    const landed = textCustomData(text, false);
+    const landed = textCustomData(text);
     if (shape?.kind === "line" || isLinearElement(live)) {
       const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, content, style.fontFamily, lineMinFontSize, lineMaxFontSize);
@@ -731,6 +747,89 @@ function commitText(
     const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const pair = fitBoundText(probe, content, minFontSize, maxFontSize);
     return [applyFreeLayout(text, pair.text, content, landed), ...removeMarker(live)];
+  });
+}
+
+/**
+ * The words SO FAR, previewed in the region while the founder is still speaking (round 5).
+ *
+ * Fitted exactly like a commit — same probe, same binary search, same region geometry — so the preview is not a
+ * different layout that jumps when the final transcript lands. What differs is that the take is not over: the
+ * region MARKER stays, the text keeps its binding to it, it is drawn at `INTERIM_OPACITY`, and it is stamped
+ * `customData.voiceInterim` so that (a) a reload sweeps it instead of leaving half a sentence at 45 % on the board
+ * and (b) the controller can tell its own preview apart from landed words.
+ *
+ * An empty interim answer returns [] rather than discarding anything: nothing has been decided yet.
+ */
+function commitInterim(
+  target: VoiceTarget,
+  text: ExcalidrawTextElement,
+  transcript: string,
+  style: StyleSnapshot,
+  marker?: ExcalidrawElement | null,
+  opts?: FitOptions,
+): ExcalidrawElement[] {
+  const live = marker && !marker.isDeleted ? marker : null;
+  return guarded("commitInterim", [], () => {
+    const { maxFontSize, minFontSize, lineMaxFontSize, lineMinFontSize } = resolveOptions(opts);
+    const content = String(transcript ?? "").trim();
+    if (!content) {
+      return [];
+    }
+    const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
+    const label = { ...labelOf(style, style.fontFamily), opacity: INTERIM_OPACITY };
+    const stamped = textCustomData(text, { interim: true });
+    if (shape?.kind === "line" || isLinearElement(live)) {
+      const g = lineGeometry(live, shape);
+      const layout = layoutLineText(g, content, style.fontFamily, lineMinFontSize, lineMaxFontSize);
+      // A line region's text was never bound to the line, so the preview is free text like the placeholder is.
+      return [applyLineLayout(text, layout, label, stamped)];
+    }
+    const geom = shape ? geometryOfShape(shape) : geometryOf(text);
+    const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
+    const pair = fitBoundText(probe, content, minFontSize, maxFontSize);
+    // Bound, not free: the marker is still on the canvas, and a text it lists in `boundElements` whose own
+    // containerId is null is a pair the editor would re-lay-out from one side only.
+    return live
+      ? [applyBoundLayout(text, pair.text, live.id, content, stamped)]
+      : [applyFreeLayout(text, pair.text, content, stamped)];
+  });
+}
+
+/**
+ * Puts the animated placeholder back, clearing the interim stamp.
+ *
+ * The preview above is rendered in the PROVISIONAL region (assign.ts's answer before the pre-roll window has
+ * elapsed), and the final answer may be a different region. That region must then be left exactly as it was found,
+ * which means recomputing the placeholder's own layout from `target.shape` rather than remembering an element from
+ * an earlier frame.
+ */
+function resetPlaceholder(
+  target: VoiceTarget,
+  marker: ExcalidrawElement | null,
+  text: ExcalidrawTextElement,
+  style: StyleSnapshot,
+  opts?: FitOptions,
+): ExcalidrawElement[] {
+  const live = marker && !marker.isDeleted ? marker : null;
+  return guarded("resetPlaceholder", [], () => {
+    const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
+    const label = labelOf(style, style.fontFamily);
+    const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
+    const cleared = textCustomData(text);
+    if (shape?.kind === "line" || isLinearElement(live)) {
+      const fontSize = clamp(Math.min(lineMaxFontSize, LINE_PLACEHOLDER_FONT_SIZE), minFontSize, FONT_SIZE_CEILING);
+      const g = lineGeometry(live, shape);
+      const layout = layoutLineText(g, PLACEHOLDER_FRAMES[0], label.fontFamily, fontSize, fontSize);
+      return [applyLineLayout(text, layout, label, cleared)];
+    }
+    const geom = shape ? geometryOfShape(shape) : geometryOf(text);
+    const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
+    const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
+    const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
+    return live
+      ? [applyBoundLayout(text, pair.text, live.id, PLACEHOLDER_FRAMES[0], cleared)]
+      : [applyFreeLayout(text, pair.text, PLACEHOLDER_FRAMES[0], cleared)];
   });
 }
 
@@ -754,7 +853,7 @@ function markFailed(
     const label = { ...labelOf(style, style.fontFamily), strokeColor: FAILED_COLOR };
     // The stamp is what persist.ts sweeps on: a warning may be UNBOUND (a line region, or a region whose marker an
     // earlier commit removed), and litter must not be decided by reading the text content.
-    const stamped = textCustomData(text, true);
+    const stamped = textCustomData(text, { failed: true });
     if (shape?.kind === "line" || isLinearElement(live)) {
       const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, FAILED_TEXT, style.fontFamily, FAILED_FONT_SIZE, FAILED_FONT_SIZE);
@@ -826,6 +925,8 @@ export const fit: FitModule & { measureOnly: typeof measureOnly } = {
   buildPlaceholderFor,
   setPlaceholderFrame,
   commitText,
+  commitInterim,
+  resetPlaceholder,
   markFailed,
   discard,
   warmFonts,

@@ -76,6 +76,13 @@ describe("loadSettings — the language allow-list", () => {
     expect(loadSettings().language).toBe("");
   });
 
+  it("clamps a negative interim interval to off rather than spinning the preview timer", () => {
+    store.setItem(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: -500 }));
+    expect(loadSettings().interimMs).toBe(0);
+    store.setItem(KEY, JSON.stringify({ ...DEFAULT_SETTINGS, interimMs: "soon" }));
+    expect(loadSettings().interimMs, "a non-number falls back to the default").toBe(DEFAULT_SETTINGS.interimMs);
+  });
+
   it("leaves every other field alone", () => {
     stored({ language: "ja", sttUrl: "http://example:1", maxFontSize: 42, warmMicOnBoot: false });
     const s = loadSettings();

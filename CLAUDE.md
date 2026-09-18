@@ -19,6 +19,16 @@ elapsed), several utterances may share one target (appended in onset order, refi
 utterance no stroke can claim becomes free text at the last pointer position. Audio is cut by silence, never by
 pointer events, so palm contacts and pans cut nothing. Never say "segment": the unit is an **utterance**.
 
+**Transcription is independent of the region (round 5).** A take answers two questions that do not wait for each
+other: WHAT was said — asked the instant the VAD closes the utterance, with the pen still down and the pre-roll
+window still open — and WHERE it goes, which is still `assign.ts` gated by `final` and by the pen-down flush
+barrier. `controller.ts settle()` is where they meet, called from both completion paths and idempotent, and it is
+the only place a finished utterance is written to the canvas. While an utterance is still OPEN, `interimMs` slices
+of it are transcribed and PREVIEWED in the region `assign()` would choose right now (provisional, not final): a
+cosmetic `NEVER` update, stamped `customData.voiceInterim`, never a part, never `completed`, never toasted, and
+reverted if the final assignment picks a different region. Measured on the real surface: pen-up → words went from
+1874 ms (round 4) to 80 ms, with the ~1.6 s server round trip now paid while the founder is still drawing.
+
 ## Anatomy
 
 | File | Contract it implements | One-liner |
@@ -32,14 +42,14 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 | `src/vad.ts` | `Vad` (internal to capture) | Energy VAD as a pure state machine over 20 ms RMS frames; boundaries reported as sample indices; tracks the room's noise floor (kept across `reset()`), effective threshold = max(setting, 3× floor). |
 | `src/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `src/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
-| `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. DOM-free. |
+| `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. Round 5: `transcribeUtterance` (send at utterance end) and `runAssignment` (choose the region) both end at `settle`; `sendInterim`/`scheduleInterim`/`showInterim` drive the previews and `renderEntry` derives a region's appearance from its own state (parts → interim previews → placeholder). DOM-free. |
 | `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. |
 | `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
-| `src/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
+| `src/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, interim interval, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
 | `src/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. The glyph IS the level meter: `buttonVisualState` (pure, unit-tested) maps the status to `--voice-level` through `level.ts` plus the `voice-tool--armed/--recording/--speaking/--mic-missing` classes, and voice.css clips the capsule's fill to that level. |
 | `src/App.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the `<MainMenu>` (the library's fallback items reproduced + a "Voice settings…" entry), `window.__excalidrawVoice`. |
 | `src/voice.css` | — | Styles for the injected buttons, the mic glyph's level fill/ring (22 px: the library forces 16 px on toolbar SVGs), the panel (top-LEFT, under the main menu, offset clear of the shape-properties island) and the level meter. Every library variable used by the PANEL carries a literal fallback, because the panel renders outside the `.excalidraw` subtree where `--color-*` do not exist. |
-| `scripts/` | — | `copy-fonts.mjs` (prebuild), `deploy.sh`, `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs` / `kiosk-clear.mjs` (README "Probing the live kiosk" says which answers what). |
+| `scripts/` | — | `copy-fonts.mjs` (prebuild), `deploy.sh`, `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs`, and `stt-abort-check.mjs` (round 5: fires a real Chromium fetch at the STT server and aborts it while it is queued, then checks `/health.skipped` — the proof that an abandoned interim slice costs no GPU time). |
 | `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, settings, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
 
 ## Invariants
@@ -78,6 +88,25 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 - **The user's geometry is the user's.** Fitting shrinks text to the region the founder drew; it never resizes
   anything. Below the floor font size the text simply stays at the floor (a region too small for it is the
   founder's choice, and the words stay legible).
+- **Transcription never waits for the pen, and the canvas never shows a preview it cannot take back.** The STT
+  request leaves at `onUtteranceEnd`; only the WRITING waits for `final` + the flush barrier, in `settle()`, which
+  must stay idempotent because either half may arrive second (a retry clears `settled` on purpose: it is a new
+  take). Interim previews are **cosmetic**: `CaptureUpdateAction.NEVER`, stamped `customData.voiceInterim`, swept by
+  `persist.ts` on reload, never counted in `completed`/`dropped`, and never allowed over a committed transcript, a ⚠
+  warning or a closed region. A target's appearance is a pure function of its own state (`renderEntry`: parts →
+  interim texts pointing at it → placeholder), so "undo the preview in the region the pre-roll changed its mind
+  about" is just "render that region again" — not a per-transition patch, which is how a round-4 predicate ended up
+  deleting regions it was never about.
+- **Only one interim slice per utterance is ever in flight, and the cadence is measured from the last ANSWER.** The
+  measured round trip (~1.6 s over the tailnet) is longer than the 1200 ms default, so a timer that fired regardless
+  aborted every slice with its own successor and no preview ever appeared. On the server side an abandoned slice must
+  cost nothing: the GPU lock is an `asyncio.Lock` held in the handler and `request.is_disconnected()` is checked
+  after acquiring it, so an aborted request is answered 499 and the FINAL take does not queue behind it.
+- **A region deleted DURING a take and a region that was already gone are different answers.** The founder deleting
+  a pending region is their decision (drop silently, gate G5c); an utterance whose stroke record is stale was never
+  in that region and its words fall through to the orphan path (gate N2d). Since round 5 resolves the target after
+  the request returns, `UtteranceEntry.liveTargets` (the regions alive when the audio was sent) is what tells the two
+  apart — this was a real regression the full e2e caught.
 - **`captureUpdate` rules.** `CaptureUpdateAction.IMMEDIATELY` for anything the user should be able to undo
   (creating the placeholder, committing text, marking failed, discarding); `NEVER` for cosmetic churn the user
   did not cause — placeholder animation frames, retry re-arming, tool restoration, **and the marker's deletion at

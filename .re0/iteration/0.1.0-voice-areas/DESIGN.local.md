@@ -166,3 +166,63 @@ G11 settings location — zero `voice-settings-gear` on the board; every vanilla
    outside the `.excalidraw` subtree.
 G12 language allow-list — the language `<select>` offers exactly `["", "ko", "en"]`; a stored ja/zh heals to auto
    on load; the STT server answers a disabled language with 400 and ranks auto-detection over the allow-list only.
+
+## Round 5 — one founder request (quoted verbatim)
+
+> "Most of it is fine, but when doing this, I wish speech recognition didn't make you wait until after you finish
+> drawing the region. Instead, it should happen at the same time while you're selecting the area. Right now,
+> because it waits for the region to be fully specified first, you end up having to wait for it."
+
+Diagnosed before writing anything, by reading `controller.ts` at `17a3a1d`: the STT request was only ever sent from
+`dispatch()`, which `runAssignment()` calls — and `runAssignment` returns early while `owner.conversions > 0 ||
+currentStroke?.session === owner` (the round-4c N2e pen barrier) and only acts once the assignment is `final`
+(onset + pre-roll elapsed). So the audio of a sentence that ended while the founder was still drawing sat in the
+ring buffer until pen-up, and the founder then paid the whole server round trip. **Measured on the real surface:
+1874 ms from pen-up to words at round 4; 80 ms at round 5** (same fixture, same gesture, same script — only the
+build serving the page differs; the ~1.6 s round trip is now spent while the pen is still moving).
+
+### Decisions taken
+
+- **Transcription is decoupled from assignment.** WHAT was said is asked at `onUtteranceEnd`
+  (`transcribeUtterance` → `sendFinal`), with no reference to the pen, the conversion queue or the pre-roll
+  deadline; the answer lands on `UtteranceEntry.stt` (`pending | done | failed | dropped`, with the blob kept for a
+  retry). WHERE it goes is unchanged: `assign.ts`, `final`, the N2e barrier, the pre-roll final timer. `settle()` is
+  the single place the two meet — called from both completion paths, idempotent (`u.settled`, which a retry clears
+  on purpose because a retry is a new take), and the only writer of a finished utterance.
+- **Interim slices, chained, previewed in the PROVISIONAL region.** New setting `interimMs` (default 1200, 0 = off).
+  While an utterance is open and ≥ 1000 ms old, a cut from onset−pad to *now* is transcribed and rendered in the
+  region `assign()` would choose at this instant — not the final answer — at 45 % opacity, stamped
+  `customData.voiceInterim`, with `CaptureUpdateAction.NEVER`, keeping the marker and the text's binding.
+  **Contested and settled by measurement:** the brief's "every interimMs, abort the previous request" starves on the
+  real server — the round trip (~1.6 s) is longer than the interval, so every slice was aborted by its own successor
+  and no preview ever appeared. The cadence is therefore counted from the previous slice's ANSWER; at most one slice
+  is in flight, and the utterance end aborts what is left.
+- **Rendering became a function of state, not a sequence of patches.** `renderEntry(owner, entry)` derives a
+  region's appearance from the region itself: landed parts → the interim previews currently pointing at it → the
+  animated placeholder. That is what makes "the pre-roll changed its mind, give region A back" fall out (re-render
+  A) instead of being a special case per transition — the failure mode round 4a shipped. `fit.ts` gained
+  `commitInterim` (the commit's own fit, marker kept, dimmed, stamped) and `resetPlaceholder` (the inverse).
+- **A region deleted DURING a take is not the same as a region that was already gone.** Resolving the target after
+  the answer returns collapsed two gates into one behaviour (G5c wants a silent drop, N2d wants an orphan), which the
+  full e2e caught. `UtteranceEntry.liveTargets` — the regions alive when the audio was sent — is the discriminator.
+- **The server stops paying for abandoned slices.** `stt-server`: the GPU `threading.Lock` inside `run()` becomes an
+  `asyncio.Lock` awaited in the handler, and after acquiring it `await request.is_disconnected()` answers 499 without
+  touching the GPU (counted in `/health.skipped`, logged). Proven live: `skipped abandoned request after 0.39s
+  queued (1 so far)` with the blocking take's own line immediately before it. In practice Chromium's abort usually
+  gets there even earlier — uvicorn never dispatches a request whose socket closed before it was read — so the check
+  is the backstop for the case that does reach the lock. The same deploy fixed a latent bind-retry defect: uvicorn
+  raises `SystemExit`, not `OSError`, on a bind failure, so the `except OSError` retry had never once run and a
+  redeploy that raced `schtasks /End` simply left the server down (it did, on this round's first attempt).
+
+### Gates added
+
+G13 words-before-pen-up — pen-up → committed text ≤ 400 ms on the real surface with the STT round trip printed from
+    the same run (`R5a`, measured 78–93 ms against a 1583–1636 ms round trip; the round-4 build measures 1874 ms).
+G14 interim preview — a non-placeholder, `voiceInterim`-stamped, dimmed text is rendered while `status.speaking` is
+    still true and before the utterance's `endMs`, and the final commit replaces it in the same element with the
+    stamp cleared and the marker gone (`R5b`).
+G15 provisional correction — a preview rendered in the region the pre-roll had not yet decided against is handed
+    back (placeholder, no stamp, region still on the canvas) when the final assignment picks the later stroke
+    (`R5c`; harness-bent, see EVIDENCE).
+G16 abandoned request — an aborted client request costs no GPU time and is visible as such
+    (`scripts/stt-abort-check.mjs`, `/health.skipped`, the server log line).

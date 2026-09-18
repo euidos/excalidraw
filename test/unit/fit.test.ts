@@ -296,6 +296,66 @@ describe("the commit leaves the text alone in the region", () => {
   });
 });
 
+/**
+ * Round 5. A preview is the same FIT as a commit — otherwise the words jump when the final transcript lands — but
+ * the take is not over: the marker stays, the text stays bound to it, it is faint, and it is stamped so that a
+ * reload can sweep it. And the region it borrowed has to be restorable, because the provisional assignment can be
+ * wrong.
+ */
+describe("an interim preview is a commit that has not happened yet", () => {
+  it("fits like a commit but keeps the marker, dims the text and stamps it", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    const preview = fit.commitInterim(built.target, asText(placeholder!), SENTENCE, style, marker);
+
+    expect(preview, "only the text is written: the region marker is untouched").toHaveLength(1);
+    const text = textOf(preview);
+    expect(text.id, "the same element the commit will overwrite").toBe(placeholder!.id);
+    expect(text.customData?.voiceInterim, "stamped, so a reload sweeps it").toBe(true);
+    expect((text as unknown as { opacity: number }).opacity, "faint: not settled yet").toBeLessThan(100);
+    expect(insideRegion(text, OVAL), `preview ${text.x},${text.y} ${text.width}x${text.height}`).toBe(true);
+
+    const committed = textOf(fit.commitText(built.target, asText(text as unknown as ExcalidrawElement), SENTENCE, style, marker));
+    expect(committed.customData?.voiceInterim, "the commit clears the stamp").toBeUndefined();
+    expect((committed as unknown as { fontSize: number }).fontSize, "and lands at the size the preview showed").toBe(
+      (text as unknown as { fontSize: number }).fontSize,
+    );
+  });
+
+  it("previews nothing for an empty answer instead of discarding the region", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    expect(fit.commitInterim(built.target, asText(placeholder!), "   ", style, marker)).toHaveLength(0);
+  });
+
+  it("puts the placeholder back when the final assignment picks another region", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    const preview = asText(textOf(fit.commitInterim(built.target, asText(placeholder!), SENTENCE, style, marker)) as unknown as ExcalidrawElement);
+
+    const back = fit.resetPlaceholder(built.target, marker!, preview, style);
+    expect(back).toHaveLength(1);
+    const text = textOf(back);
+    expect(text.text, "the region is waiting again").toBe("·");
+    expect(text.customData?.voiceInterim, "with the stamp cleared").toBeUndefined();
+    expect(text.containerId, "and bound to its marker exactly as the placeholder was").toBe(marker!.id);
+    expect((text as unknown as { fontSize: number }).fontSize, "at the placeholder's own size").toBe(
+      (asText(placeholder!) as unknown as { fontSize: number }).fontSize,
+    );
+  });
+
+  it("previews and resets a LINE region, whose text is free rather than bound", () => {
+    const built = fit.buildPlaceholder(STRAIGHT, style);
+    const [marker, placeholder] = built.elements;
+    const preview = textOf(fit.commitInterim(built.target, asText(placeholder!), "voice tool", style, marker));
+    expect(preview.containerId, "line text was never bound").toBeNull();
+    expect(preview.customData?.voiceInterim).toBe(true);
+    const back = textOf(fit.resetPlaceholder(built.target, marker!, asText(preview as unknown as ExcalidrawElement), style));
+    expect(back.text).toBe("·");
+    expect(back.customData?.voiceInterim).toBeUndefined();
+  });
+});
+
 describe("failure keeps the marker, a discard keeps nothing", () => {
   it("writes ⚠ STT in the region and leaves the marker dashed for the retry to aim at", () => {
     const built = fit.buildPlaceholder(OVAL, style);

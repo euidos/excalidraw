@@ -239,6 +239,19 @@ export function SettingsPanel({
       <p className="voice-settings__help">speech may start this long before its stroke</p>
 
       <label className="voice-settings__row">
+        <span>Interim results every (ms)</span>
+        <input
+          type="number"
+          min={0}
+          max={5000}
+          step={100}
+          value={settings.interimMs}
+          onChange={(e) => patch({ interimMs: clamp(Number(e.target.value), 0, 5000, settings.interimMs) })}
+        />
+      </label>
+      <p className="voice-settings__help">words appear while you are still talking; 0 turns it off</p>
+
+      <label className="voice-settings__row">
         <span>VAD threshold</span>
         <span className="voice-settings__slider">
           {/* A range, not a number field: on the wall panel there is no keyboard, and a half-typed "0.0" would clamp away. */}

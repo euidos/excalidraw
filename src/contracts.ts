@@ -78,6 +78,18 @@ export const isFailedWarning = (
   el: { customData?: Record<string, unknown> } | null | undefined,
 ): boolean => el?.customData?.voiceFailed === true;
 
+/**
+ * The stamp an INTERIM transcript carries while the founder is still speaking (round 5). An interim text is a
+ * cosmetic preview: it is written with `CaptureUpdateAction.NEVER`, it is never a `part`, and the commit (or a
+ * change of provisional region) overwrites it. It therefore must never survive a reload — `persist.ts` sweeps it
+ * by this stamp, exactly like a failure warning, because the words in it look like a real transcript.
+ */
+export const VOICE_INTERIM_CUSTOM_DATA: { voiceInterim: true } = { voiceInterim: true };
+/** True for a text element currently showing an in-flight (interim) transcript. */
+export const isInterimText = (
+  el: { customData?: Record<string, unknown> } | null | undefined,
+): boolean => el?.customData?.voiceInterim === true;
+
 /** Ids the controller needs to find its elements again later (never hold element objects across frames). */
 export interface VoiceTarget {
   /**
@@ -118,6 +130,15 @@ export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTa
  * angle (never upside down), on the line's upper side. Returns [text] — plus the marker marked deleted when one
  * was passed in, in the SAME update, so nothing but the text is ever visible after a commit.
  *
+ * commitInterim: the SAME fit as commitText, but for a transcript that is still being spoken — the region marker
+ * STAYS (the take is not over), the text keeps its binding to it, it is drawn at `INTERIM_OPACITY` and it is
+ * stamped `customData.voiceInterim` so a reload can sweep it. Returns [] for an empty transcript (nothing to
+ * preview) instead of discarding the region.
+ *
+ * resetPlaceholder: the inverse — puts the animated placeholder's own layout back on the text, clearing the
+ * interim stamp. Needed because an interim preview may be rendered in the WRONG region (the provisional
+ * assignment) and the final assignment then has to leave that region exactly as it found it.
+ *
  * markFailed: text becomes "⚠ STT" in red (#c92a2a) at a small size, inside the region, stamped with
  * VOICE_FAILED_CUSTOM_DATA so a reload can sweep it; the marker (if any) stays dashed so the retry has a visible
  * target. A successful retry goes through commitText, which clears the stamp and removes the marker. A take that
@@ -139,6 +160,21 @@ export interface FitModule {
     transcript: string,
     style: StyleSnapshot,
     marker?: ExcalidrawElement | null,
+    opts?: FitOptions,
+  ): ExcalidrawElement[];
+  commitInterim(
+    target: VoiceTarget,
+    text: ExcalidrawTextElement,
+    transcript: string,
+    style: StyleSnapshot,
+    marker?: ExcalidrawElement | null,
+    opts?: FitOptions,
+  ): ExcalidrawElement[];
+  resetPlaceholder(
+    target: VoiceTarget,
+    marker: ExcalidrawElement | null,
+    text: ExcalidrawTextElement,
+    style: StyleSnapshot,
     opts?: FitOptions,
   ): ExcalidrawElement[];
   markFailed(
@@ -193,6 +229,12 @@ export interface VoiceSettings {
   minSegmentMs: number;
   /** Speech may start this long before its stroke's pointer-down and still belong to it. */
   preRollMs: number;
+  /**
+   * How often, while an utterance is still OPEN, a partial cut of it is transcribed so the words appear before the
+   * speaker stops (round 5). 0 = off. An interim result is cosmetic: it is never a committed part, never counted in
+   * `completed`, never toasted, and the final transcript of the utterance always supersedes it.
+   */
+  interimMs: number;
   /** Energy VAD floor (RMS 0..1); the effective threshold is max(this, 3 × measured noise floor). */
   vadThreshold: number;
   /** Acquire the microphone at page load so the first arm is instant. The e2e turns this off to time fixtures. */
@@ -208,6 +250,7 @@ export const DEFAULT_SETTINGS: VoiceSettings = {
   lineMinFontSize: 14,
   minSegmentMs: 400,
   preRollMs: 1500,
+  interimMs: 1200,
   vadThreshold: 0.012,
   warmMicOnBoot: true,
 };
@@ -244,6 +287,12 @@ export interface VoiceStatus {
   dropped: number;
   /** The text of the last drop, so the filter can be audited from the debug surface. */
   lastDropped?: string;
+  /**
+   * Round trip of the last FINAL transcription that came back (`SttResult.latencyMs`). Diagnostics only: it is what
+   * makes "the words appeared 80 ms after pen-up" comparable with "the server took 950 ms", which is the whole
+   * claim of round 5 — before it, that server time was paid after pen-up.
+   */
+  lastSttLatencyMs?: number;
 }
 export interface VoiceControllerDeps {
   api: ExcalidrawImperativeAPI;

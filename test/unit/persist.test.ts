@@ -182,6 +182,27 @@ describe("sweepGhostPlaceholders", () => {
       expect(byId(out, "t1").isDeleted).toBe(false);
     });
 
+    /**
+     * Round 5. An interim preview carries REAL WORDS at 45 % opacity, so no content test can tell it from a
+     * committed transcript — only `customData.voiceInterim` can. A reload in the middle of a sentence must not
+     * leave half of it, faint, on the founder's board for ever, and it must not keep the dashed box either.
+     */
+    it("deletes an INTERIM preview and the marker it was previewed in", () => {
+      const out = sweepGhostPlaceholders([
+        marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
+        text("t1", "회의 목표는", { containerId: "m1", customData: { voiceInterim: true } }),
+      ]);
+      expect(byId(out, "t1").isDeleted, "half a sentence is not a transcript").toBe(true);
+      expect(byId(out, "m1").isDeleted, "and its region was never the founder's drawing").toBe(true);
+    });
+
+    it("deletes a free-standing interim preview (a line region's text is never bound)", () => {
+      const out = sweepGhostPlaceholders([
+        text("t1", "voice tool ships", { containerId: null, customData: { voiceInterim: true } }),
+      ]);
+      expect(byId(out, "t1").isDeleted).toBe(true);
+    });
+
     it("unbinds rather than deletes a container that is NOT a marker", () => {
       const out = sweepGhostPlaceholders([
         shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),

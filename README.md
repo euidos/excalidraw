@@ -49,7 +49,10 @@ npm install     # dependencies + the Playwright browser download used by npm run
    hidden, so an unarmed, healthy board shows the mic alone.
 2. **Draw while you speak.** A rough oval or box selects a rectangular region and the text is fitted inside it; a
    roughly horizontal stroke selects a line and the text sits along it (underline-style); a near-vertical stroke
-   selects a region too. A tap does nothing.
+   selects a region too. A tap does nothing. **The words start appearing while you are still talking** — a faint
+   preview of the sentence so far, refreshed roughly every second and a bit (Interim results, in settings) — and the
+   finished transcript lands the moment you lift the pen, because it was already being recognised while you were
+   drawing, not after.
 3. **Keep going.** Draw the next shape and keep talking — nothing waits. A badge on the mic button counts what is
    still pending.
 4. **Speak without drawing** and the words land as plain text where you last touched the board.
@@ -99,6 +102,7 @@ opens settings, because on the IR frame a "tap" is routinely 700 ms and long-pre
 | Max font size | 96 | Upper bound for text inside an area. |
 | Line max / **line min** font size | 36 / 14 | Text along a line shrinks to fit the line, but never below the line minimum: at that floor it wraps to the line's length and grows upward instead of shrinking past legibility. |
 | **Pre-roll (ms)** | 1500 | How long speech may start *before* its stroke and still belong to it. Raise it if you habitually name a box well before drawing it; lower it if labels keep jumping to the next shape. |
+| **Interim results every (ms)** | 1200 | While you are still speaking, the sentence so far is transcribed and previewed in the region at 45% opacity, this long after the previous preview came back. **0 turns previews off** (the final transcript is unaffected). Higher = fewer, longer previews; the preview never becomes the transcript, and a reload always sweeps it. |
 | **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale — both are drawn from the raw RMS the capture emits (`src/level.ts`, full scale 0.06), so what you see is what the VAD compares. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
 | **Warm mic on boot** | on | Acquire the microphone at page load so the first arm records instantly. Turn it off if you do not want the mic light on until you arm (the e2e turns it off to time fixtures). |
 
@@ -238,7 +242,10 @@ node scripts/kiosk-probe.mjs /tmp/kiosk.png [--stroke]
 | `kiosk-mic-check.mjs` | Records 3 s from **every** audio input and reports blob bytes, decoded duration, sample rate and peak. Use when a mic is present but produces nothing. |
 | `kiosk-blob-check.mjs` | Arms and disarms the app's own controller with no stroke (the orphan path) while intercepting the upload: what was actually POSTed (bytes, decoded seconds) and what the server answered. Use when transcripts come back empty or wrong. |
 | `kiosk-offset-check.mjs` | Independent of the app: opens the mic, waits 20 s, records 3 s, sends it straight to the STT server. Separates "our capture is wrong" from "this mic/server is wrong", and shows the round-trip latency. |
-| `kiosk-clear.mjs` | Marks every scene element deleted — a blank board for the next probe. **It wipes the founder's visible board**; the elements are soft-deleted (undoable in the session), but ask first. |
+| `stt-abort-check.mjs` | Not a kiosk probe: fires two requests at the STT server from a real Chromium page and aborts the second while it is queued behind the GPU, then checks that `/health.skipped` went up. Run it after any change to the server's locking, and start `npm run preview` first (the page has to come from a real origin). |
+
+(There is no `kiosk-clear.mjs` any more. It wiped the founder's live board on 2026-09-18 and was deleted; a probe
+may only remove elements it created itself, by id.)
 
 ## Speech-to-text server
 
@@ -248,6 +255,12 @@ same LAN as the whiteboard — **the founder is the owner and the only contact; 
 redundancy.** It runs as the logon scheduled task "STT server" (files in `C:\Users\jeeni\stt`; source mirrored at
 /root/dev_workspaces/stt-server), warm ~10 s after start. CORS is open so both the whiteboard and dev builds can
 reach it. Nothing is sent anywhere else; there is no cloud path.
+
+One take at a time runs on the GPU. Since round 5 that queue is held by an `asyncio` lock in the request handler and
+the handler asks `request.is_disconnected()` the moment it acquires it: a request the browser has already abandoned —
+which is what an interim slice becomes as soon as a newer one is cut — is answered **499** without costing any GPU
+time, counted in `/health.skipped` and logged as `skipped abandoned request after Xs queued`. So the final take of an
+utterance never waits behind previews of itself.
 
 ## Test clips
 

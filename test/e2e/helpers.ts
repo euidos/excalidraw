@@ -443,6 +443,104 @@ export const readMicGlyphWatch = (page: Page): Promise<GlyphWatch> =>
     return w.__glyphWatch ?? { peakLevel: 0, sawSpeaking: false, samples: 0, levels: [] };
   });
 
+// --- round 5: when the words appear ---------------------------------------
+
+/** One observation of a text the app wrote: an interim preview, or the committed transcript. */
+export interface WordsSample {
+  /** `Date.now()` inside the page, the same clock `upAt` is stamped with. */
+  at: number;
+  text: string;
+  opacity: number;
+  /** `status.speaking` at that instant: the VAD still has the utterance open. */
+  speaking: boolean;
+  /** `capture.now()` — the clock utterance onsets and ends are stamped with. */
+  captureNow: number;
+}
+export interface WordsWatch {
+  /** `Date.now()` of the pointer-up that finished the region, taken inside the page. */
+  upAt: number;
+  /** First interim-stamped text to appear. */
+  interim: WordsSample | null;
+  /** First committed (unstamped, non-placeholder) transcript to appear. */
+  committed: WordsSample | null;
+  samples: number;
+}
+
+/**
+ * Samples the scene from INSIDE the page every 10 ms and records when the words first appear.
+ *
+ * The measurement round 5 is about is "pen-up → words on the canvas", and polling that from the test runner adds a
+ * CDP round trip to every sample — on the same order as the number being measured. Both timestamps therefore come
+ * from the page's own clock: `upAt` from a capture-phase `pointerup` listener on window (Excalidraw's canvas events
+ * bubble there), `committed.at` from the sampler.
+ */
+export async function watchWords(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __wordsWatch: WordsWatch; __wordsWatchStop?: () => void };
+    const watch: WordsWatch = { upAt: 0, interim: null, committed: null, samples: 0 };
+    w.__wordsWatch = watch;
+    const onUp = (): void => {
+      if (!watch.upAt) {
+        watch.upAt = Date.now();
+      }
+    };
+    window.addEventListener("pointerup", onUp, true);
+    const isDots = (t: string): boolean => /^\u00b7{1,3}$/.test(t.trim());
+    const timer = setInterval(() => {
+      watch.samples += 1;
+      const voice = window.__excalidrawVoice!;
+      const sample = (el: { text?: string; opacity?: number }): WordsSample => ({
+        at: Date.now(),
+        text: String(el.text ?? "").trim(),
+        opacity: Number(el.opacity ?? 100),
+        speaking: voice.status().speaking,
+        captureNow: voice.capture ? voice.capture.now() : 0,
+      });
+      for (const el of voice.api.getSceneElements()) {
+        const anyEl = el as unknown as {
+          type: string;
+          text?: string;
+          opacity?: number;
+          customData?: Record<string, unknown> | null;
+        };
+        if (anyEl.type !== "text" || typeof anyEl.text !== "string") {
+          continue;
+        }
+        const t = anyEl.text.trim();
+        if (!t || isDots(t) || t.startsWith("\u26a0")) {
+          continue;
+        }
+        if (anyEl.customData?.voiceInterim === true) {
+          watch.interim ??= sample(anyEl);
+          continue;
+        }
+        watch.committed ??= sample(anyEl);
+      }
+    }, 10);
+    w.__wordsWatchStop = () => {
+      clearInterval(timer);
+      window.removeEventListener("pointerup", onUp, true);
+    };
+  });
+}
+
+/** Reads the sampler without stopping it, so a gate can poll for the commit it is waiting for. */
+export const readWords = (page: Page): Promise<WordsWatch> =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __wordsWatch?: WordsWatch }).__wordsWatch ?? {
+        upAt: 0,
+        interim: null,
+        committed: null,
+        samples: 0,
+      },
+  );
+
+export const stopWords = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    (window as unknown as { __wordsWatchStop?: () => void }).__wordsWatchStop?.();
+  });
+
 export async function evidence(page: Page, name: string): Promise<string> {
   mkdirSync(EVIDENCE, { recursive: true });
   const path = resolve(EVIDENCE, `${name}.png`);
@@ -485,4 +583,41 @@ export function ensureSilenceClip(): string {
     writeWav(path, { rate: 16_000, channels: 1, bits: 16, data: Buffer.alloc(16_000 * 2 * 2) });
   }
   return path;
+}
+
+/** The PCM of a 16-bit mono WAV, found by walking the chunks (jfk.wav carries a LIST chunk before its data). */
+function pcmOf(path: string): { rate: number; data: Buffer } {
+  const src = readFileSync(path);
+  const rate = src.readUInt32LE(24);
+  let at = 12;
+  while (at + 8 <= src.length) {
+    const id = src.subarray(at, at + 4).toString("latin1");
+    const size = src.readUInt32LE(at + 4);
+    if (id === "data") {
+      return { rate, data: src.subarray(at + 8, at + 8 + size) };
+    }
+    at += 8 + size + (size % 2);
+  }
+  throw new Error(`${path}: no data chunk`);
+}
+
+/**
+ * A copy of `name` with `leadMs` of silence in front, written under test-results/ (generated, git-ignored).
+ *
+ * Why any gate needs this: the VAD seeds the room's noise floor from the first ~200 ms of audio it ever sees, and
+ * the effective threshold is max(setting, 3 × floor) — so a clip that starts ON a loud syllable seeds the floor at
+ * speech level and the VAD stays deaf until it decays (measured: ~4.5 s of ko-long swallowed, one 0.5 s utterance
+ * out of 5.4 s of speech). Chromium starts playing the file when the stream opens, i.e. at the arm, so a fixture
+ * whose speech starts at 120 ms is exactly that case. A gate that needs a LONG OPEN utterance (round 5's interim
+ * preview) therefore hands the VAD a second of silence first — which is also what a real room gives it.
+ */
+export function ensureLeadInClip(name: string, leadMs = 1200): string {
+  const out = resolve("test-results/fixtures", `${name.replace(/\.wav$/, "")}-lead${leadMs}.wav`);
+  if (!existsSync(out)) {
+    const { rate, data } = pcmOf(fixture(name));
+    const lead = Buffer.alloc(Math.round((rate * leadMs) / 1000) * 2);
+    mkdirSync(resolve("test-results/fixtures"), { recursive: true });
+    writeWav(out, { rate, channels: 1, bits: 16, data: Buffer.concat([lead, data]) });
+  }
+  return out;
 }

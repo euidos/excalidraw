@@ -158,10 +158,41 @@ const fakeFit = (): FitModule => {
       transcript: string,
       _style: StyleSnapshot,
       marker?: ExcalidrawElement | null,
+    ) => {
+      // Like the real fit.commitText: a commit CLEARS both stamps, or the next reload's sweep would eat the words.
+      const { voiceInterim: _i, voiceFailed: _f, ...rest } = (text.customData ?? {}) as Record<string, unknown>;
+      return [
+        {
+          ...text,
+          text: transcript,
+          originalText: transcript,
+          containerId: null,
+          opacity: 100,
+          customData: rest,
+        } as ExcalidrawTextElement,
+        ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
+      ];
+    },
+    // Round 5: a preview keeps the marker and stamps the text; the reset puts the dot back and clears the stamp.
+    commitInterim: (
+      _t: VoiceTarget,
+      text: ExcalidrawTextElement,
+      transcript: string,
     ) => [
-      { ...text, text: transcript, originalText: transcript, containerId: null } as ExcalidrawTextElement,
-      ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
+      {
+        ...text,
+        text: transcript,
+        originalText: transcript,
+        opacity: 45,
+        customData: { ...(text.customData ?? {}), voiceInterim: true },
+      } as ExcalidrawTextElement,
     ],
+    resetPlaceholder: (_t: VoiceTarget, _marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => {
+      const { voiceInterim: _drop, ...rest } = (text.customData ?? {}) as Record<string, unknown>;
+      return [
+        { ...text, text: "·", originalText: "·", opacity: 100, customData: rest } as ExcalidrawTextElement,
+      ];
+    },
     markFailed: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => [
       ...(marker ? [marker] : []),
       { ...text, text: "⚠ STT" } as ExcalidrawTextElement,
@@ -216,6 +247,38 @@ class FakeCapture implements VoiceCapture {
 
 const settings = (patch: Partial<VoiceSettings> = {}): VoiceSettings => ({ ...DEFAULT_SETTINGS, ...patch });
 
+interface SttCall {
+  signal?: AbortSignal;
+  /** Set when the promise has been answered, so a test can assert "this one was never resolved". */
+  done: boolean;
+  answer: (text: string) => void;
+  reject: (err: unknown) => void;
+}
+/**
+ * A transcribe the test answers by hand. Round 5's whole claim is about WHEN the request leaves and WHEN its answer
+ * is used, so the round trip has to be a thing the test opens and closes, not a resolved promise.
+ */
+function scriptedTranscribe(): { calls: SttCall[]; fn: Transcribe } {
+  const calls: SttCall[] = [];
+  const fn: Transcribe = (_blob, _opts, signal) =>
+    new Promise((resolve, reject) => {
+      const call: SttCall = {
+        signal,
+        done: false,
+        answer: (text: string) => {
+          call.done = true;
+          resolve({ text, latencyMs: 7 });
+        },
+        reject: (err: unknown) => {
+          call.done = true;
+          reject(err);
+        },
+      };
+      calls.push(call);
+    });
+  return { calls, fn };
+}
+
 const recognizeRect: RecognizeStroke = () => ({ kind: "rectangle", x: 0, y: 0, width: 100, height: 60 });
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -246,6 +309,9 @@ function harness(patch: Partial<VoiceSettings> = {}, transcribe: Transcribe = as
 })): Harness {
   const api = new FakeApi();
   const capture = new FakeCapture();
+  // Every pre-round-5 case is about the FINAL transcript; interim slices are opted into per case so the older
+  // gates keep measuring exactly what they measured before.
+  const base: Partial<VoiceSettings> = { interimMs: 0, ...patch };
   const controller = createVoiceController({
     api: api.api(),
     capture,
@@ -253,7 +319,7 @@ function harness(patch: Partial<VoiceSettings> = {}, transcribe: Transcribe = as
     transcribe,
     fit: fakeFit(),
     recognize: recognizeRect,
-    getSettings: () => settings(patch),
+    getSettings: () => settings(base),
     onStatus: () => undefined,
   });
   /** The library inserts the element into the scene before onPointerDown fires. */
@@ -650,5 +716,297 @@ describe("a failure never overwrites words that already landed", () => {
 
     expect(h.api.find(written.id)!.text, "the words are the only copy there is").toBe(SENTENCE);
     expect(h.status().failed, "the failure is reported by the retry button instead").toBe(1);
+  });
+});
+
+/**
+ * Round 5. The founder's complaint was a WAIT: "speech recognition shouldn't make you wait until after you finish
+ * drawing the region". The cause was structural — the STT request was only sent from the assignment path, which is
+ * blocked by the pre-roll window and by the pen-down flush barrier (gate N2e) — so these cases assert the two halves
+ * of a take are now independent, and that the place they meet (`settle`) does not care which arrived first.
+ */
+describe("R5 — the transcript is requested at the utterance end, not at the assignment", () => {
+  it("sends the audio while the pen is still down, and lands the words when the region appears", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // The label is spoken first and the pen goes down inside its pre-roll window — the N2e shape, which is exactly
+    // the rhythm the complaint is about.
+    h.capture.clock = 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1000 });
+    h.capture.clock = 1150;
+    h.strokeDown("ink-a");
+    h.capture.clock = 1600;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1000, endMs: 1500 });
+
+    // THE GATE: the request is in flight although the pen has not been lifted and no region exists yet.
+    await until(() => stt.calls.length === 1, 1000);
+    expect(h.status().pending, "the round trip is counted as work in flight").toBe(1);
+    expect(h.status().completed, "and nothing has been written: there is no region yet").toBe(0);
+
+    // The server answers while the founder is still drawing.
+    stt.calls[0]!.answer(SENTENCE);
+    await wait(30);
+    expect(h.status().completed, "the words wait for the region, not for the server").toBe(0);
+    expect(h.status().pending, "the round trip is over, though").toBe(0);
+
+    await h.strokeUp("ink-a");
+    await until(() => h.status().completed === 1, 3000);
+    const committed = h.api.elements.find((e) => !e.isDeleted && e.text === SENTENCE)!;
+    expect(committed, "the words landed").toBeTruthy();
+    expect(committed.containerId ?? null, "as free text: the marker left with the commit").toBeNull();
+    expect(h.status().orphans, "and not as an orphan at the pen origin").toBe(0);
+    expect(h.status().lastSttLatencyMs, "the round trip is reported for comparison").toBe(7);
+  });
+
+  it("settles the same take when the ASSIGNMENT is the half that arrives first", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // Region first, then speech: the assignment is final the moment the utterance closes, so the transcript is the
+    // half that is missing.
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 2500 });
+
+    await until(() => stt.calls.length === 1, 1000);
+    expect(h.status().completed, "nothing to write yet: the server has not answered").toBe(0);
+    stt.calls[0]!.answer(SENTENCE);
+    await until(() => h.status().completed === 1, 3000);
+
+    // Idempotence: the disarm re-runs assignment and resolution over the whole session, which calls settle again
+    // for an utterance that is already done. It must not write, count or commit a second time.
+    h.controller.toggleLatch();
+    await wait(80);
+    expect(h.status().completed, "settle is idempotent").toBe(1);
+    expect(
+      h.api.elements.filter((e) => !e.isDeleted && e.text === SENTENCE),
+      "exactly one text carries the sentence",
+    ).toHaveLength(1);
+    expect(stt.calls.length, "and no second request was sent").toBe(1);
+  });
+
+  it("a failure that arrives before the assignment lands as ⚠ STT on the final region, and retries", async () => {
+    let calls = 0;
+    const h = harness({ preRollMs: 200 }, async () => {
+      calls += 1;
+      if (calls === 1) {
+        await wait(5);
+        throw new Error("STT server unreachable");
+      }
+      return { text: SENTENCE, latencyMs: 3 };
+    });
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1000 });
+    h.capture.clock = 1150;
+    h.strokeDown("ink-a");
+    h.capture.clock = 1600;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1000, endMs: 1500 });
+    // The failure happens with the pen down and no region in existence: it has nowhere to be reported yet.
+    await until(() => calls === 1, 1000);
+    await wait(30);
+    expect(h.status().failed, "a failure with no region is not a failed region yet").toBe(0);
+
+    await h.strokeUp("ink-a");
+    await until(() => h.status().failed === 1, 3000);
+    const warned = h.api.elements.find((e) => !e.isDeleted && e.text === "⚠ STT")!;
+    expect(warned, "the warning is in the region the assignment finally chose").toBeTruthy();
+
+    h.controller.retryFailed();
+    await until(() => h.status().completed === 1, 3000);
+    expect(h.api.find(warned.id)!.text, "the retry re-sent the audio it kept and the words landed").toBe(SENTENCE);
+    expect(h.status().failed).toBe(0);
+  });
+});
+
+describe("R5 — interim slices while the founder is still speaking", () => {
+  /** onset one second behind the clock, so the first slice is due after `interimMs` rather than after the warm-up. */
+  const OPEN_ONSET = 1000;
+
+  it("previews the words so far in the provisional region, then the final transcript replaces them", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    h.capture.clock = OPEN_ONSET + 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: OPEN_ONSET + 900 });
+
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer("Ship the");
+    await until(() => h.api.find(textA)!.text === "Ship the", 2000);
+    const preview = h.api.find(textA)!;
+    expect(preview.customData?.voiceInterim, "the preview is stamped so a reload sweeps it").toBe(true);
+    expect(h.api.find(markerA)!.isDeleted, "the region marker stays: the take is not over").toBe(false);
+    expect(h.status().completed, "a preview is not a completed take").toBe(0);
+    expect(h.status().pending, "and it is not counted as work in flight").toBe(0);
+
+    // The utterance closes: every slice is abandoned and the FINAL cut is what lands.
+    await until(() => stt.calls.some((c) => !c.done), 2000); // the next slice is already out
+    const slices = stt.calls.filter((c) => !c.done);
+    h.capture.clock = OPEN_ONSET + 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: OPEN_ONSET + 900, endMs: OPEN_ONSET + 2500 });
+    expect(slices.length, "at least one slice was still open when the speech stopped").toBeGreaterThan(0);
+    expect(slices.every((c) => c.signal?.aborted), "the open slices were aborted at the utterance end").toBe(true);
+
+    const final = stt.calls.at(-1)!;
+    final.answer(SENTENCE);
+    await until(() => h.status().completed === 1, 3000);
+    const committed = h.api.find(textA)!;
+    expect(committed.text, "the final transcript replaced the preview").toBe(SENTENCE);
+    expect(committed.customData?.voiceInterim, "and the interim stamp is gone").toBeUndefined();
+    expect(h.api.find(markerA)!.isDeleted, "the marker left with the commit").toBe(true);
+  });
+
+  it("ignores a slice that answers after the final transcript has landed", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    h.capture.clock = OPEN_ONSET + 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: OPEN_ONSET + 900 });
+    await until(() => stt.calls.length === 1, 2000);
+    const slice = stt.calls[0]!;
+
+    h.capture.clock = OPEN_ONSET + 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: OPEN_ONSET + 900, endMs: OPEN_ONSET + 2500 });
+    await until(() => stt.calls.length === 2, 2000);
+    stt.calls[1]!.answer(SENTENCE);
+    await until(() => h.status().completed === 1, 3000);
+
+    // The slice answers LATE, with the founder's words already on the canvas.
+    slice.answer("Ship the voice");
+    await wait(40);
+    expect(h.api.find(textA)!.text, "a stale slice may never overwrite the landed words").toBe(SENTENCE);
+    expect(h.api.find(textA)!.customData?.voiceInterim).toBeUndefined();
+    expect(h.status().completed).toBe(1);
+  });
+
+  it("reverts the provisional region when the final assignment gives the words to a later stroke", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 1500, interimMs: 40 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
+
+    // Speech starts while A is the only region, so the preview goes there.
+    h.capture.clock = 3000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 2900 });
+    await until(() => stt.calls.length === 1, 2000);
+    stt.calls[0]!.answer("Ship the");
+    await until(() => h.api.find(textA)!.text === "Ship the", 2000);
+
+    // Then the founder draws the region they actually meant, inside the pre-roll window: assign.ts hands the words
+    // to the LATER stroke, and A has to be left exactly as it was found.
+    h.capture.clock = 3600;
+    await h.stroke("ink-b");
+    const markerB = h.api.elements.find((e) => e.type === "rectangle" && e.id !== markerA)!.id;
+    const textB = h.api.elements.find((e) => e.containerId === markerB)!.id;
+
+    h.capture.clock = 5000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 2900, endMs: 4500 });
+    await until(() => stt.calls.some((c) => !c.done), 2000);
+    stt.calls.at(-1)!.answer(SENTENCE);
+    await until(() => h.status().completed === 1, 3000);
+
+    expect(h.api.find(textB)!.text, "the words went to the region the assignment chose").toBe(SENTENCE);
+    expect(h.api.find(textA)!.text, "the region the preview borrowed is a placeholder again").toBe("·");
+    expect(h.api.find(textA)!.customData?.voiceInterim, "with the interim stamp cleared").toBeUndefined();
+    expect(h.api.find(markerA)!.isDeleted, "and the region itself is still the founder's").toBe(false);
+  });
+});
+
+/**
+ * The seam round 5 opened, gated. The request now leaves BEFORE the region is chosen, so "the founder deleted the
+ * region while the words were in flight" (their deletion is the answer — e2e G5c) and "the region was already gone
+ * when we started" (the words survive as an orphan — e2e N2d) are no longer told apart by when the target happened
+ * to be resolved. `UtteranceEntry.liveTargets` is what tells them apart, and this is the pair that pins it.
+ */
+describe("R5 — a region that dies while the transcript is in flight", () => {
+  it("drops the result silently: the founder deleted that region on purpose", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const marker = h.api.elements.find((e) => e.type === "rectangle")!;
+    const text = h.api.elements.find((e) => e.containerId === marker.id)!;
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 2500 });
+    await until(() => stt.calls.length === 1, 1000);
+
+    // Ctrl+Z (or the eraser) with the words already on their way back.
+    h.api.elements = h.api.elements.map((e) =>
+      e.id === marker.id || e.id === text.id ? ({ ...e, isDeleted: true } as El) : e,
+    );
+    stt.calls[0]!.answer(SENTENCE);
+    await wait(60);
+
+    expect(h.status().completed, "nothing was written").toBe(0);
+    expect(h.status().orphans, "and nothing was placed where the box used to be").toBe(0);
+    expect(h.api.elements.some((e) => !e.isDeleted && e.text === SENTENCE)).toBe(false);
+  });
+
+  it("still orphans an utterance whose region was already gone when the audio was sent", async () => {
+    const stt = scriptedTranscribe();
+    const h = harness({ preRollMs: 200 }, stt.fn);
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const marker = h.api.elements.find((e) => e.type === "rectangle")!;
+    const text = h.api.elements.find((e) => e.containerId === marker.id)!;
+    // Undone BEFORE a word is spoken: the stroke record is stale, and the words must not be thrown away with it.
+    h.api.elements = h.api.elements.map((e) =>
+      e.id === marker.id || e.id === text.id ? ({ ...e, isDeleted: true } as El) : e,
+    );
+
+    h.capture.clock = 1200;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1200 });
+    h.capture.clock = 3000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1200, endMs: 2500 });
+    await until(() => stt.calls.length === 1, 1000);
+    stt.calls[0]!.answer(SENTENCE);
+
+    await until(() => h.status().completed === 1, 2000);
+    expect(h.status().orphans, "placed as free text where the pen last was").toBe(1);
   });
 });

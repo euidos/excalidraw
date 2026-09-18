@@ -381,3 +381,38 @@ New in round 4:
 - **Round-1 N4 geometry ownership** was never adopted as its own row; **G4** absorbed it and now proves
   no container growth at the hostile 120x80 as well as 240x120. G4's documented exception (a shape too small for
   the floor font size is grown visibly) stands.
+
+## Round 5 lessons
+
+- **L14 — "every N ms, abort the previous one" starves when N < latency.** The brief's interim policy was written as
+  a cadence; on the real server the round trip (~1.6 s) exceeded the 1200 ms interval, so every slice was killed by
+  its own successor and the founder would have seen nothing at all. The unit tests could not see it (a fake
+  transcribe answers instantly) and only a real-surface run with request logging did. Rule: a periodic request whose
+  period is not provably longer than its own latency must be **chained off its answer**, not off a timer.
+- **L15 — decoupling two decisions silently merges the cases that were told apart by their ORDER.** Round 4 resolved
+  the target at send time, which is what made "the founder deleted the region while the words were in flight" (drop,
+  G5c) different from "the region was already gone" (orphan, N2d). Moving the resolution after the answer collapsed
+  both into "orphan" — a regression the full e2e caught and neither the unit suite nor the new gates would have.
+  Rule: when a step moves later in time, list every behaviour that was reading the old ORDER as a fact.
+- **L16 — rendering as a function of state is what makes a speculative write undoable.** The interim preview is
+  written into a region the assignment may still take away. With per-transition patches that needs an "undo the
+  preview" path per source state; with `renderEntry(parts → interim → placeholder)` it is one call on the region that
+  lost it. This is the same shape as the round-4a defect (a predicate that doubled as a deleter) seen from the other
+  side.
+- **L17 — an unreachable retry is not a retry.** `stt-server`'s `except OSError:` bind-retry had never run: uvicorn
+  logs the bind failure and raises `SystemExit`. It took a redeploy that raced the old process to find out, with the
+  service down until someone looked. Rule: a recovery path needs a gate that exercises the exception it claims to
+  catch, or it is decoration.
+- **L18 — a "before" number needs the old build, not arithmetic.** The pen-up→words claim is 1874 ms → 80 ms because
+  the same spec was run against `17a3a1d` in a throwaway worktree on a second port. Deriving the before number as
+  "penUp + sttLatency" would have been proof by construction (round-1 vocabulary) and would also have been wrong by
+  the conversion time.
+
+### Vocabulary added in round 5
+
+- **provisional region** — `assign()`'s answer with `nowMs = now`, i.e. before `final`. Legitimate to RENDER into
+  (dimmed, stamped, `NEVER`) and never legitimate to commit into.
+- **cosmetic write** — a scene update the founder did not cause: `CaptureUpdateAction.NEVER`, stamped so a reload can
+  sweep it, and never counted in a status field that means "a take finished".
+- **chained cadence** — a repeating request scheduled from the previous answer rather than from a clock, so it cannot
+  overtake itself (L14).

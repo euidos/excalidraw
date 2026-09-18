@@ -41,6 +41,9 @@ function coerce(raw: unknown): VoiceSettings {
     lineMinFontSize: num(o.lineMinFontSize, DEFAULT_SETTINGS.lineMinFontSize),
     minSegmentMs: num(o.minSegmentMs, DEFAULT_SETTINGS.minSegmentMs),
     preRollMs: num(o.preRollMs, DEFAULT_SETTINGS.preRollMs),
+    // Clamped, not just coerced: a negative or absurd value would either spin the interim timer or silently
+    // disable the preview, and 0 has to keep meaning "off" rather than "every tick".
+    interimMs: Math.max(0, num(o.interimMs, DEFAULT_SETTINGS.interimMs)),
     vadThreshold: num(o.vadThreshold, DEFAULT_SETTINGS.vadThreshold),
     warmMicOnBoot: bool(o.warmMicOnBoot, DEFAULT_SETTINGS.warmMicOnBoot),
   };
