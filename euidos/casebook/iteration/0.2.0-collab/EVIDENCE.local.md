@@ -275,3 +275,12 @@ SHOULD/NICE, not yet re-verified as fixed (open for the next round or the main l
   login) is STILL unverified end-to-end by any agent — dev-woo is a tagged device and no interactive session can
   mint an Access JWT. Both checks remain the founder's, not a build round's, to close — see the founderTest
   below and collab-plan.md's "what is left".
+
+### Phase 3 shipped — 2026-09-18 (main loop)
+
+| Item | Status | Note |
+| --- | --- | --- |
+| Deploy of master d202c88b | **met** | `deploy-whiteboard.sh master` by the main loop; storage image d202c88b healthy; nginx now proxies `Host $http_host` (fleet-infra c4f2c41) so the CSRF guard sees host:port like Origin. |
+| Live checks on the phase-3 build | **met** | collab-smoke PASS 25.1 s; voice live-smoke PASS 26.5 s; bare tailnet origin serves the boards index; `/`, `/boards`, `/api/boards`, `/socket.io/` on board.euidos.ai all 302 → Access. |
+| Boards e2e re-run flake | **open — owner: main loop** | Second consecutive run of euidos/e2e/boards against the same rehearsal stack fails at `boards-empty` (the suite assumes an empty database). Make the suite reset or scope its data; not a product defect. |
+| Smoke-test boards removed | **done** | Every board created by the anonymous wall identity during smoke runs was soft-deleted on the host before the founder’s first look. |
