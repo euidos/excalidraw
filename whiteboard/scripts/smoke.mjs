@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-const b = await chromium.launch({ args: ["--use-fake-device-for-media-stream","--use-fake-ui-for-media-stream","--use-file-for-fake-audio-capture=/root/dev_workspaces/excalidraw-voice/test/fixtures/jfk.wav"] });
+const b = await chromium.launch({ args: ["--use-fake-device-for-media-stream","--use-fake-ui-for-media-stream","--use-file-for-fake-audio-capture=/root/dev_workspaces/excalidraw/whiteboard/test/fixtures/jfk.wav"] });
 const p = await b.newPage({ viewport: { width: 1400, height: 800 } });
 const errors = []; p.on("pageerror", e => errors.push(String(e))); p.on("console", m => { if (m.type()==="error") errors.push(m.text()); });
 await p.goto("http://127.0.0.1:4173/");

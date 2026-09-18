@@ -7,9 +7,11 @@ scaffolding is deleted, leaving the transcript alone on the canvas at the larges
 drew. Strokes never wait for transcripts: several can be in flight at once and results land by element id in
 whatever order they arrive.
 
-**Repo:** local-only git repo on **dev-woo** at `/root/dev_workspaces/excalidraw-voice`. No remote, nothing to
-clone from a forge: get onto dev-woo (`ssh dev-woo`, key-based root over the tailnet) and work there. Private,
-unpublished, no licence — treat it as the founder's code.
+**Repo:** this app is the `whiteboard/` directory of the **euidos/excalidraw** fork
+(github.com/euidos/excalidraw, branch `master`); the fork is the project repo so upstream Excalidraw merges in
+(`git fetch upstream && git merge upstream/master`) and our code never lives in a second repository. The working
+clone is on **dev-woo** at `/root/dev_workspaces/excalidraw/whiteboard` (`ssh dev-woo`, key-based root over the
+tailnet). Private, no licence — treat it as the founder's code.
 
 **The whiteboard** is a wall-mounted touch display in the founder's office driven by a small Ubuntu 24.04 PC
 (tailnet `100.102.3.47`) that boots into Chromium kiosk mode showing a locally served Excalidraw. This app

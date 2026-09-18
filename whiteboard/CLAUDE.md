@@ -4,8 +4,12 @@ Wrapper app around `@excalidraw/excalidraw` 0.18.1 (React 19, Vite 8, TypeScript
 voice-area tool. Read `src/contracts.ts` and `src/contracts-capture.ts` first: together they are the interface
 every module implements, and `App.tsx` only wires them together.
 
-Local-only repo (no git remote, no licence) at `/root/dev_workspaces/excalidraw-voice` on **dev-woo**, which is
-also the build box. Run `npm install` once before `npm test` / `npm run build` / `npm run e2e`.
+Lives at `whiteboard/` inside the **euidos/excalidraw** fork (remote `origin` = github.com/euidos/excalidraw,
+branch `master`; `upstream` = excalidraw/excalidraw, merged in to update). Working clone
+`/root/dev_workspaces/excalidraw/whiteboard` on **dev-woo**, which is also the build box; run every npm command from
+this directory, never from the fork root (that is a yarn workspace). Run `npm install` once before `npm test` /
+`npm run build` / `npm run e2e`. Two deploy targets: the wall kiosk (`scripts/deploy.sh`, this directory) and the
+hosted board (`fleet-infra/scripts/deploy-whiteboard.sh`, builds `origin/master` in a throwaway worktree).
 
 ## The model, in one paragraph
 
