@@ -141,10 +141,13 @@ For the deployed kiosk, tunnel CDP (`ssh -f -N -L 9223:127.0.0.1:9222 root@100.1
 
 `scripts/deploy.sh` is not atomic and has **no rollback**: `rsync --delete` replaces the served directory in
 place and the whiteboard keeps no previous build, so going back means rebuilding an older commit on dev-woo (or
-restoring a copy you took first). File server (`excalidraw.service`) and kiosk (`excalidraw-ui.service`) are
-separate units and fail separately — the recovery steps, the status/journal commands and the rollback recipe are
-README "If a deploy breaks the kiosk". A deploy or rollback never touches the founder's board: it lives in the
-browser profile's storage for `http://127.0.0.1:8765`, not in `dist/`.
+restoring a copy you took first). File server (`excalidraw.service`) and the kiosk Chromium are separate and fail
+separately — the recovery steps, the status/journal commands and the rollback recipe are README "If a deploy
+breaks the kiosk". Since the 2026-09-18 reboot the kiosk Chromium is spawned by the autostart entry directly under
+the session, not as the transient `excalidraw-ui` unit, so the deploy's default path reloads the page over CDP
+(`scripts/kiosk-reload.mjs`, refuses while the board is in use) and `--restart` kills and relaunches Chromium only
+when the launcher flags changed. A deploy or rollback never touches the founder's board: it lives in the browser
+profile's storage for `http://127.0.0.1:8765`, not in `dist/`.
 
 ## Never
 
@@ -153,7 +156,11 @@ browser profile's storage for `http://127.0.0.1:8765`, not in `dist/`.
   readable by (and compatible with) the plain app.
 - Do not add npm dependencies casually. `idb-keyval`, `react`, `react-dom`, `@excalidraw/excalidraw` are what we
   have; anything else is a decision, not a convenience.
-- Do not run `scripts/kiosk-clear.mjs` unasked — it deletes every element on the founder's live board.
+- Do not mutate the founder's live board from a probe. On 2026-09-18 a probe's "cleanup" (`kiosk-clear.mjs`, now
+  deleted from the repo) wiped 785 elements the founder had drawn that morning; they came back only because the
+  page still held them as `isDeleted` (`scripts/kiosk-restore.mjs`). A probe may add its own stroke — with no
+  speech the disarm sweep removes it — and may delete only elements it created, by id. Never a scene-wide update,
+  and never `kiosk-reload.mjs --force` while `kiosk-reload.mjs` reports the board in use.
 - Do not commit `dist/`, `public/fonts/`, `test-results/` or `playwright-report/` — all generated, all ignored.
 - Do not edit another module's files, the contracts, `package.json` or configs when you own a module; ask.
 - Do not leave a module in `src/` that nothing imports, or a contract nothing implements; two contradicting
