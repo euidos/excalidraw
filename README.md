@@ -95,7 +95,7 @@ opens settings, because on the IR frame a "tap" is routinely 700 ms and long-pre
 
 | Setting | Default | What it is for |
 | --- | --- | --- |
-| STT URL | `http://100.81.33.83:8770` | Any OpenAI-compatible transcription endpoint works as a stand-in. |
+| STT URL | `http://100.81.33.83:8770` on loopback (the kiosk); `<origin>/stt` anywhere else (the hosted board, proxied by nginx) | Any OpenAI-compatible transcription endpoint works as a stand-in. |
 | Language | auto | Force `ko` or `en` when auto-detection keeps guessing wrong. Those two are the only languages enabled: the STT server's own allow-list (`STT_LANGUAGES`, default `ko,en`) restricts auto-detection to them and answers any other explicit language with 400, which is what stopped Korean coming back as Japanese. A stored `ja`/`zh` from an older build is reset to auto on load. |
 | Prompt | empty | Hint words (names, jargon) handed to whisper. |
 | Microphone | Default | The whiteboard has several inputs; an exact device that fails falls back to the default. |

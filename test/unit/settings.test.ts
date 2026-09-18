@@ -9,7 +9,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_SETTINGS } from "../../src/contracts";
+import { DEFAULT_SETTINGS, STT_DIRECT_URL, defaultSttUrl } from "../../src/contracts";
 import { ALLOWED_LANGUAGES, loadSettings, saveSettings } from "../../src/settings";
 
 const KEY = "voice-settings";
@@ -89,5 +89,18 @@ describe("loadSettings — the language allow-list", () => {
     expect(s.sttUrl).toBe("http://example:1");
     expect(s.maxFontSize).toBe(42);
     expect(s.warmMicOnBoot).toBe(false);
+  });
+});
+
+describe("defaultSttUrl — the hosted board must call the server same-origin", () => {
+  it("dials the desktop directly from loopback (the wall kiosk) and outside a browser", () => {
+    expect(defaultSttUrl({ hostname: "127.0.0.1", origin: "http://127.0.0.1:8765" })).toBe(STT_DIRECT_URL);
+    expect(defaultSttUrl({ hostname: "localhost", origin: "http://localhost:4173" })).toBe(STT_DIRECT_URL);
+    expect(defaultSttUrl(undefined), "node / vitest").toBe(STT_DIRECT_URL);
+  });
+  it("uses the nginx /stt proxy on every other origin (HTTPS pages cannot fetch plain HTTP)", () => {
+    expect(defaultSttUrl({ hostname: "euidos-internal.pony-bellatrix.ts.net", origin: "https://euidos-internal.pony-bellatrix.ts.net" }))
+      .toBe("https://euidos-internal.pony-bellatrix.ts.net/stt");
+    expect(defaultSttUrl({ hostname: "board.euidos.ai", origin: "https://board.euidos.ai" })).toBe("https://board.euidos.ai/stt");
   });
 });

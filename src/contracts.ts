@@ -240,8 +240,27 @@ export interface VoiceSettings {
   /** Acquire the microphone at page load so the first arm is instant. The e2e turns this off to time fixtures. */
   warmMicOnBoot: boolean;
 }
+/** The GPU box that runs faster-whisper (desktop-woo on the tailnet); reachable over plain HTTP only. */
+export const STT_DIRECT_URL = "http://100.81.33.83:8770";
+
+/**
+ * Where THIS page reaches the STT server. On the wall kiosk the page is plain HTTP on loopback, so it dials the
+ * desktop directly. Everywhere else the board is served over HTTPS (Tailscale Serve, board.euidos.ai), and a browser
+ * refuses a plain-HTTP fetch from an HTTPS page as mixed content, so nginx in front of the hosted board proxies the
+ * server same-origin at `/stt/` (fleet-infra stacks/euidos-internal/nginx.conf). Takes the location explicitly so it
+ * can be unit-tested outside a browser.
+ */
+export function defaultSttUrl(
+  loc: { hostname: string; origin: string } | undefined = typeof location === "undefined" ? undefined : location,
+): string {
+  if (!loc || loc.hostname === "localhost" || loc.hostname === "127.0.0.1" || loc.hostname === "") {
+    return STT_DIRECT_URL;
+  }
+  return `${loc.origin}/stt`;
+}
+
 export const DEFAULT_SETTINGS: VoiceSettings = {
-  sttUrl: "http://100.81.33.83:8770",
+  sttUrl: defaultSttUrl(),
   language: "",
   prompt: "",
   deviceId: "",
