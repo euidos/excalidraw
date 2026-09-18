@@ -17,6 +17,16 @@ export default defineConfig(({ mode }) => {
       port: Number(envVars.VITE_APP_PORT || 3000),
       // open the browser
       open: true,
+      // euidos: the app derives its API base from window.location.origin, so in
+      // dev that is the Vite server — without this proxy `yarn start` cannot
+      // save a collab scene at all. Run euidos/storage-backend on :3000
+      // (see its README) or point VITE_APP_API_PROXY somewhere else.
+      proxy: {
+        "/api": {
+          target: envVars.VITE_APP_API_PROXY || "http://localhost:3000",
+          changeOrigin: false,
+        },
+      },
     },
     // We need to specify the envDir since now there are no
     //more located in parallel with the vite.config.ts file but in parent dir

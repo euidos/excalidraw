@@ -77,6 +77,7 @@ import { FileStatusStore } from "../data/fileStatusStore";
 import { LocalData } from "../data/LocalData";
 import {
   isSavedToFirebase,
+  isSessionError,
   loadFilesFromFirebase,
   loadFromFirebase,
   saveFilesToFirebase,
@@ -132,6 +133,16 @@ interface CollabProps {
   excalidrawAPI: ExcalidrawImperativeAPI;
 }
 
+// euidos: a save that failed because the edge refused the request (an expired
+// Cloudflare Access session on board.euidos.ai, or an unreachable origin) is not
+// a transient blip — nothing will be persisted again until the page is
+// reloaded, so it gets its own message and is not hidden by the once-per-message
+// dedupe that keeps ordinary save failures from spamming a modal. It is still
+// rate-limited, or the dialog would return on every save interval.
+const SESSION_EXPIRED_MESSAGE =
+  "Your session expired or the server is unreachable. Reload this page to sign in again — until you do, nothing you draw is being saved.";
+const SESSION_ERROR_DIALOG_INTERVAL_MS = 60_000;
+
 class Collab extends PureComponent<CollabProps, CollabState> {
   portal: Portal;
   fileManager: FileManager;
@@ -144,6 +155,8 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   private collaborators = new Map<SocketId, Collaborator>();
   /** the socket ids of the users following the current user */
   private followedBy = new Set<SocketId>();
+  /** euidos: when the "reload to sign in" dialog was last shown */
+  private lastSessionErrorDialogAt = 0;
 
   constructor(props: CollabProps) {
     super(props);
@@ -337,14 +350,23 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         this.handleRemoteSceneUpdate(this._reconcileElements(storedElements));
       }
     } catch (error: any) {
-      const errorMessage = /is longer than.*?bytes/.test(error.message)
+      const sessionExpired = isSessionError(error);
+      const errorMessage = sessionExpired
+        ? SESSION_EXPIRED_MESSAGE
+        : /is longer than.*?bytes/.test(error.message)
         ? t("errors.collabSaveFailed_sizeExceeded")
         : t("errors.collabSaveFailed");
 
-      if (
-        !this.state.dialogNotifiedErrors[errorMessage] ||
-        !this.isCollaborating()
-      ) {
+      const showDialog = sessionExpired
+        ? Date.now() - this.lastSessionErrorDialogAt >
+          SESSION_ERROR_DIALOG_INTERVAL_MS
+        : !this.state.dialogNotifiedErrors[errorMessage] ||
+          !this.isCollaborating();
+
+      if (showDialog) {
+        if (sessionExpired) {
+          this.lastSessionErrorDialogAt = Date.now();
+        }
         this.setErrorDialog(errorMessage);
         this.setState({
           dialogNotifiedErrors: {

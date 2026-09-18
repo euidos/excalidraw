@@ -11,6 +11,7 @@ import { encodeFilesForUpload } from "./FileManager";
 import {
   clearSavedSceneVersionCache,
   isSavedToFirebase,
+  isSessionError,
   loadFilesFromFirebase,
   loadFromFirebase,
   saveFilesToFirebase,
@@ -26,9 +27,16 @@ const ORIGIN = window.location.origin;
 
 const appState = getDefaultAppState() as AppState;
 
-const portal = (): Portal =>
+/**
+ * The saved-version cache is keyed by SOCKET (as upstream's firebase.ts was),
+ * so a test that wants continuity must reuse one socket and a test about
+ * reconnects makes a new one.
+ */
+let socket: { id: string };
+
+const portal = (onSocket: { id: string } = socket): Portal =>
   ({
-    socket: { id: "socket-1" },
+    socket: onSocket,
     roomId: ROOM_ID,
     roomKey: ROOM_KEY,
   } as unknown as Portal);
@@ -67,6 +75,7 @@ const bytesResponse = (status: number, bytes?: Uint8Array) =>
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  socket = { id: "socket-1" };
   clearSavedSceneVersionCache();
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
@@ -95,6 +104,8 @@ describe("euidosStorage — scenes", () => {
     expect(calls()[1][1].method).toBe("PUT");
     expect(putBody(calls()[1]).elements).toHaveLength(1);
     expect(putBody(calls()[1]).elements[0].id).toBe("el-1");
+    // the room did not exist: base version 0
+    expect(putBody(calls()[1]).baseVersion).toBe(0);
     // plaintext JSON — no ciphertext/iv envelope
     expect(putBody(calls()[1])).not.toHaveProperty("ciphertext");
 
@@ -130,6 +141,8 @@ describe("euidosStorage — scenes", () => {
     const written = putBody(calls()[1]).elements;
     expect(written).toHaveLength(1);
     expect(written[0].x).toBe(999);
+    // and the merge is written back against the version it merged with
+    expect(putBody(calls()[1]).baseVersion).toBe(5);
   });
 
   it("loads and restores a stored scene, and marks it saved", async () => {
@@ -138,9 +151,7 @@ describe("euidosStorage — scenes", () => {
       jsonResponse(200, { elements: remote, version: 3 }),
     );
 
-    const loaded = await loadFromFirebase(ROOM_ID, ROOM_KEY, {
-      id: "socket-1",
-    } as any);
+    const loaded = await loadFromFirebase(ROOM_ID, ROOM_KEY, socket as any);
 
     expect(loaded).toHaveLength(1);
     expect(loaded![0].id).toBe("el-1");
@@ -180,6 +191,122 @@ describe("euidosStorage — scenes", () => {
     await expect(
       saveToFirebase(portal(), elements, appState),
     ).rejects.toThrowError(/HTTP 500/);
+  });
+
+  it("retries a save the backend refused as stale (no lost update)", async () => {
+    const local = [element({ id: "mine", x: 1, version: 3 })];
+
+    fetchMock
+      // read at version 1 ...
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 1 }))
+      // ... someone else committed version 2 in between
+      .mockResolvedValueOnce(jsonResponse(409, { error: "conflict" }))
+      // re-read, re-merge against what they wrote ...
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          elements: [element({ id: "theirs", x: 5, version: 9 })],
+          version: 2,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { version: 3 }));
+
+    const stored = await saveToFirebase(portal(), local, appState);
+
+    expect(calls()).toHaveLength(4);
+    expect(putBody(calls()[1]).baseVersion).toBe(1);
+    expect(putBody(calls()[3]).baseVersion).toBe(2);
+    // both writers' elements survive the retry
+    const written = putBody(calls()[3])
+      .elements.map((el: any) => el.id)
+      .sort();
+    expect(written).toEqual(["mine", "theirs"]);
+    expect(stored).not.toBeNull();
+    expect(isSavedToFirebase(portal(), local)).toBe(false);
+  });
+
+  it("gives up after repeated conflicts instead of looping forever", async () => {
+    const local = [element({ id: "el-1" })];
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? jsonResponse(409, { error: "conflict" })
+        : jsonResponse(200, { elements: [], version: 1 }),
+    );
+
+    await expect(
+      saveToFirebase(portal(), local, appState),
+    ).rejects.toThrowError(/kept changing/);
+    // 5 attempts, each a GET + a PUT
+    expect(calls()).toHaveLength(10);
+  });
+
+  it("does not create a board for a room that was opened and never drawn on", async () => {
+    // GET 404 (never saved) and nothing to save -> no PUT at all, so the
+    // backend never mints an 'Untitled' board with an unknowable roomKey
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, { error: "not_found" }));
+
+    expect(await saveToFirebase(portal(), [], appState)).toBeNull();
+
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0][1]?.method).toBeUndefined();
+    expect(isSavedToFirebase(portal(), [])).toBe(true);
+  });
+
+  it("still writes an empty scene once the room exists (a cleared board)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, { elements: [element({ id: "gone" })], version: 2 }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, { version: 3 }));
+
+    await saveToFirebase(portal(), [], appState);
+
+    expect(calls()).toHaveLength(2);
+    expect(calls()[1][1].method).toBe("PUT");
+  });
+
+  it("forgets the saved version on a new socket, so a reconnect re-saves", async () => {
+    const elements = [element({ id: "el-1" })];
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(404, {}))
+      .mockResolvedValueOnce(jsonResponse(200, { version: 1 }));
+    await saveToFirebase(portal(), elements, appState);
+    expect(isSavedToFirebase(portal(), elements)).toBe(true);
+
+    // the connection dropped and came back: whatever we proved about the
+    // stored scene belonged to the old socket
+    const reconnected = { id: "socket-2" };
+    expect(isSavedToFirebase(portal(reconnected), elements)).toBe(false);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { elements: [], version: 1 }))
+      .mockResolvedValueOnce(jsonResponse(200, { version: 2 }));
+    await saveToFirebase(portal(reconnected), elements, appState);
+    expect(calls()).toHaveLength(4);
+  });
+
+  it("marks a 401/403 as a session error Collab can act on", async () => {
+    const elements = [element({ id: "el-1" })];
+
+    for (const status of [401, 403]) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce(jsonResponse(status, { error: "x" }));
+      const error = await saveToFirebase(portal(), elements, appState).catch(
+        (e) => e,
+      );
+      expect(isSessionError(error)).toBe(true);
+      expect(error.message).toMatch(/reload this page/i);
+    }
+  });
+
+  it("marks an unreachable origin (the Access redirect) as a session error", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const error = await saveToFirebase(
+      portal(),
+      [element({ id: "el-1" })],
+      appState,
+    ).catch((e) => e);
+    expect(isSessionError(error)).toBe(true);
   });
 });
 

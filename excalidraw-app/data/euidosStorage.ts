@@ -40,9 +40,11 @@ import type { Socket } from "socket.io-client";
 //     that code is untouched.
 //   * Firebase reconciled inside a Firestore transaction. Our backend stores
 //     the scene as given, so `saveToFirebase` does the read-modify-write here:
-//     GET the stored scene, `reconcileElements`, PUT the result. Last writer
-//     wins on a true race; the socket relay + the 20 s full-scene resync heal
-//     it, exactly as they did with the Firebase path.
+//     GET the stored scene, `reconcileElements`, PUT the result — and the PUT
+//     carries `baseVersion`, the version it merged against. The backend refuses
+//     a stale write with 409, we re-read and re-merge, up to
+//     `MAX_SAVE_ATTEMPTS`. That is what Firestore's `runTransaction` did; plain
+//     last-writer-wins silently deleted the other writer's elements.
 //   * files keep their upstream envelope (compressed + encrypted with the room
 //     key by `encodeFilesForUpload`) and travel as raw bytes over
 //     `PUT /api/files/:id?board=<boardId>` / `GET /api/files/:id`. Because that
@@ -53,6 +55,51 @@ import type { Socket } from "socket.io-client";
 
 /** matches the backend's scene size limit (contract: PUT /api/rooms/:id) */
 const SCENE_MAX_BYTES = 20 * 1024 * 1024;
+
+/** GET -> reconcile -> PUT attempts before a concurrent writer is given up on */
+const MAX_SAVE_ATTEMPTS = 5;
+
+/**
+ * Thrown when the edge refused the request rather than the backend: on
+ * board.euidos.ai a Cloudflare Access session expires, and from then on every
+ * save fails. That is not a transient blip — the user must reload to sign in —
+ * so Collab.tsx tells them so instead of showing the generic save error once and
+ * letting them keep drawing into a board that is no longer being persisted.
+ */
+export class EuidosSessionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EuidosSessionError";
+  }
+}
+
+export const isSessionError = (error: unknown): boolean =>
+  error instanceof Error && error.name === "EuidosSessionError";
+
+const SESSION_ERROR_MESSAGE =
+  "euidos storage: your session expired or the server is unreachable — reload this page to sign in again";
+
+/**
+ * Every call to our own origin goes through here so that an expired Access
+ * session is always the same, recognisable error. A `fetch` rejection on a
+ * same-origin /api path is either the Access login redirect failing the CORS
+ * check or the origin being down; both are fixed by reloading.
+ */
+const apiFetch = async (path: string, init?: RequestInit) => {
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      credentials: "same-origin",
+      ...init,
+    });
+  } catch (error: any) {
+    throw new EuidosSessionError(SESSION_ERROR_MESSAGE);
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new EuidosSessionError(SESSION_ERROR_MESSAGE);
+  }
+  return response;
+};
 
 /**
  * One static build serves both the tunnel and the tailnet origin, so the API
@@ -72,25 +119,32 @@ const fileStorageId = (boardId: string, fileId: FileId | string) =>
   encodeURIComponent(`${boardId}_${fileId}`);
 
 /**
- * Scene version we last wrote to (or read from) the backend, per room. Keyed by
- * room rather than by socket so that it survives a reconnect: the version is a
- * property of the scene, not of the connection.
+ * Scene version we last wrote to (or read from) the backend. Keyed by SOCKET,
+ * as upstream's firebase.ts was: a cache that outlives the connection also
+ * outlives the proof that the save landed, so after a reconnect the client
+ * would never re-send a scene that a concurrent writer had meanwhile dropped.
+ * A fresh socket starts with an empty cache, so the first save after any
+ * (re)connect always goes through.
  */
 class SavedSceneVersionCache {
-  private static cache = new Map<string, number>();
+  private static cache = new WeakMap<SocketLike, number>();
 
-  static get = (roomId: string) => SavedSceneVersionCache.cache.get(roomId);
+  static get = (socket: SocketLike) => SavedSceneVersionCache.cache.get(socket);
 
   static set = (
-    roomId: string,
+    socket: SocketLike,
     elements: readonly SyncableExcalidrawElement[],
   ) => {
-    SavedSceneVersionCache.cache.set(roomId, getSceneVersion(elements));
+    SavedSceneVersionCache.cache.set(socket, getSceneVersion(elements));
   };
 
   /** test seam */
-  static clear = () => SavedSceneVersionCache.cache.clear();
+  static clear = () => {
+    SavedSceneVersionCache.cache = new WeakMap<SocketLike, number>();
+  };
 }
+
+type SocketLike = object;
 
 export const clearSavedSceneVersionCache = SavedSceneVersionCache.clear;
 
@@ -100,7 +154,7 @@ export const isSavedToFirebase = (
 ): boolean => {
   if (portal.socket && portal.roomId && portal.roomKey) {
     return (
-      SavedSceneVersionCache.get(portal.roomId) === getSceneVersion(elements)
+      SavedSceneVersionCache.get(portal.socket) === getSceneVersion(elements)
     );
   }
   // if no room exists, consider the room saved so that we don't unnecessarily
@@ -108,13 +162,17 @@ export const isSavedToFirebase = (
   return true;
 };
 
-const loadStoredElements = async (
+/** the stored scene and the version to send back as `baseVersion` */
+type StoredScene = {
+  elements: SyncableExcalidrawElement[];
+  version: number;
+};
+
+const loadStoredScene = async (
   roomId: string,
   opts?: { deleteInvisibleElements?: boolean },
-): Promise<SyncableExcalidrawElement[] | null> => {
-  const response = await fetch(apiUrl(`/rooms/${encodeURIComponent(roomId)}`), {
-    credentials: "same-origin",
-  });
+): Promise<StoredScene | null> => {
+  const response = await apiFetch(`/rooms/${encodeURIComponent(roomId)}`);
 
   if (response.status === 404) {
     return null;
@@ -127,13 +185,17 @@ const loadStoredElements = async (
 
   const stored = (await response.json()) as {
     elements?: readonly ExcalidrawElement[] | null;
+    version?: number;
   };
 
-  return getSyncableElements(
-    restoreElements(stored.elements || [], null, {
-      deleteInvisibleElements: opts?.deleteInvisibleElements ?? false,
-    }),
-  );
+  return {
+    elements: getSyncableElements(
+      restoreElements(stored.elements || [], null, {
+        deleteInvisibleElements: opts?.deleteInvisibleElements ?? false,
+      }),
+    ),
+    version: typeof stored.version === "number" ? stored.version : 0,
+  };
 };
 
 export const saveToFirebase = async (
@@ -152,41 +214,64 @@ export const saveToFirebase = async (
     return null;
   }
 
-  const prevStoredElements = await loadStoredElements(roomId);
+  // read -> reconcile -> write, retried while another writer commits in
+  // between: the 409 is the backend refusing to let us overwrite a version we
+  // never saw (see MAX_SAVE_ATTEMPTS).
+  for (let attempt = 1; attempt <= MAX_SAVE_ATTEMPTS; attempt++) {
+    const stored = await loadStoredScene(roomId);
 
-  const nextElements = prevStoredElements
-    ? getSyncableElements(
-        reconcileElements(
-          elements,
-          prevStoredElements as OrderedExcalidrawElement[] as RemoteExcalidrawElement[],
-          appState,
-        ),
-      )
-    : elements;
+    const nextElements = stored
+      ? getSyncableElements(
+          reconcileElements(
+            elements,
+            stored.elements as OrderedExcalidrawElement[] as RemoteExcalidrawElement[],
+            appState,
+          ),
+        )
+      : elements;
 
-  const response = await fetch(apiUrl(`/rooms/${encodeURIComponent(roomId)}`), {
-    method: "PUT",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ elements: nextElements }),
-  });
+    if (!stored && nextElements.length === 0) {
+      // A "#room=" link that was opened and never drawn on. Writing an empty
+      // scene would make the backend mint an "Untitled" board whose roomKey it
+      // cannot know (the key never leaves the URL fragment), i.e. a board row
+      // no one can ever open again. Treat it as saved and write nothing.
+      SavedSceneVersionCache.set(socket, nextElements);
+      return null;
+    }
 
-  if (response.status === 413) {
-    // message shape kept compatible with Collab.tsx's size-error detection
-    throw new Error(
-      `euidos storage: scene is longer than ${SCENE_MAX_BYTES} bytes`,
+    const response = await apiFetch(`/rooms/${encodeURIComponent(roomId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        elements: nextElements,
+        baseVersion: stored ? stored.version : 0,
+      }),
+    });
+
+    if (response.status === 409) {
+      continue;
+    }
+    if (response.status === 413) {
+      // message shape kept compatible with Collab.tsx's size-error detection
+      throw new Error(
+        `euidos storage: scene is longer than ${SCENE_MAX_BYTES} bytes`,
+      );
+    }
+    if (!response.ok) {
+      throw new Error(
+        `euidos storage: could not save room ${roomId} (HTTP ${response.status})`,
+      );
+    }
+
+    SavedSceneVersionCache.set(socket, nextElements);
+
+    return toBrandedType<RemoteExcalidrawElement[]>(
+      nextElements as unknown as RemoteExcalidrawElement[],
     );
   }
-  if (!response.ok) {
-    throw new Error(
-      `euidos storage: could not save room ${roomId} (HTTP ${response.status})`,
-    );
-  }
 
-  SavedSceneVersionCache.set(roomId, nextElements);
-
-  return toBrandedType<RemoteExcalidrawElement[]>(
-    nextElements as unknown as RemoteExcalidrawElement[],
+  throw new Error(
+    `euidos storage: could not save room ${roomId} (the scene kept changing under ${MAX_SAVE_ATTEMPTS} attempts)`,
   );
 };
 
@@ -195,19 +280,19 @@ export const loadFromFirebase = async (
   roomKey: string,
   socket: Socket | null,
 ): Promise<readonly SyncableExcalidrawElement[] | null> => {
-  const elements = await loadStoredElements(roomId, {
+  const stored = await loadStoredScene(roomId, {
     deleteInvisibleElements: true,
   });
 
-  if (!elements) {
+  if (!stored) {
     return null;
   }
 
   if (socket) {
-    SavedSceneVersionCache.set(roomId, elements);
+    SavedSceneVersionCache.set(socket, stored.elements);
   }
 
-  return elements;
+  return stored.elements;
 };
 
 export const saveFilesToFirebase = async ({
