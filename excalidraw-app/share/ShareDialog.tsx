@@ -15,10 +15,11 @@ import {
 import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
 import { useCopyStatus } from "@excalidraw/excalidraw/hooks/useCopiedIndicator";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
-import { KEYS, getFrame } from "@excalidraw/common";
+import { getFrame } from "@excalidraw/common";
 import { useEffect, useRef, useState } from "react";
 
 import { atom, useAtom, useAtomValue } from "../app-jotai";
+import { CollaboratorNameField } from "../boards/CollaboratorNameField";
 import { activeRoomLinkAtom } from "../collab/Collab";
 
 import "./ShareDialog.scss";
@@ -107,13 +108,9 @@ const ActiveRoomDialog = ({
       <h3 className="ShareDialog__active__header">
         {t("labels.liveCollaboration").replace(/\./g, "")}
       </h3>
-      <TextField
-        defaultValue={collabAPI.getUsername()}
-        placeholder="Your name"
-        label="Your name"
-        onChange={collabAPI.setUsername}
-        onKeyDown={(event) => event.key === KEYS.ENTER && handleClose()}
-      />
+      {/* euidos: the collaborator name is the edge identity, so the field is
+          read-only once /api/me resolved — see boards/CollaboratorNameField. */}
+      <CollaboratorNameField collabAPI={collabAPI} onEnter={handleClose} />
       <div className="ShareDialog__active__linkRow">
         <TextField
           ref={ref}

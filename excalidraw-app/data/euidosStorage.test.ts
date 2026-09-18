@@ -9,7 +9,9 @@ import type { AppState, BinaryFileData } from "@excalidraw/excalidraw/types";
 import { encodeFilesForUpload } from "./FileManager";
 
 import {
+  BOARD_DELETED_MESSAGE,
   clearSavedSceneVersionCache,
+  isBoardDeletedError,
   isSavedToFirebase,
   isSessionError,
   loadFilesFromFirebase,
@@ -179,6 +181,26 @@ describe("euidosStorage — scenes", () => {
     ).rejects.toThrowError(/is longer than.*?bytes/);
 
     // and the scene must not be considered saved
+    expect(isSavedToFirebase(portal(), elements)).toBe(false);
+  });
+
+  it("names the cause when the board was deleted under us (PUT 404)", async () => {
+    // a colleague deleted the board from the index while this tab was drawing:
+    // the backend refuses to resurrect a soft-deleted board, so every save 404s
+    // and upstream's generic "Couldn't save to the backend database" is exactly
+    // the wrong thing to tell someone whose work now only exists in this tab
+    const elements = [element({ id: "el-1" })];
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(404, {}))
+      .mockResolvedValueOnce(jsonResponse(404, { error: "not_found" }));
+
+    const error = await saveToFirebase(portal(), elements, appState).catch(
+      (err) => err,
+    );
+
+    expect(isBoardDeletedError(error)).toBe(true);
+    expect(error.message).toBe(BOARD_DELETED_MESSAGE);
+    expect(error.message).toMatch(/deleted/i);
     expect(isSavedToFirebase(portal(), elements)).toBe(false);
   });
 

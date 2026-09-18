@@ -7,7 +7,10 @@
  *
  * It is a NAVIGATION, not an in-place route swap: leaving a live board has to
  * tear the collab session and the voice controller down through the same unload
- * path a closed tab uses (see `route.ts`, RETRO G-P2.8).
+ * path a closed tab uses (see `route.ts`, RETRO G-P2.8). What that path does
+ * NOT do is save, so `gotoBoards()` flushes the scene first and is awaited —
+ * otherwise the app's own "way back" is the one that loses the last strokes and
+ * pops the browser's "Leave site?" prompt on the way out.
  */
 import { createIcon } from "@excalidraw/excalidraw/components/icons";
 import { MainMenu } from "@excalidraw/excalidraw/index";
@@ -34,7 +37,7 @@ export const BoardsMenuItem = () => (
   <MainMenu.Item
     icon={boardsIcon}
     data-testid="menu-boards"
-    onSelect={() => gotoBoards()}
+    onSelect={() => void gotoBoards()}
   >
     Boards
   </MainMenu.Item>

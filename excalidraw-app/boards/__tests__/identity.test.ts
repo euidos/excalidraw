@@ -5,6 +5,7 @@ import {
   displayNameFor,
   getIdentity,
   resetIdentityCache,
+  resolveCollaboratorName,
 } from "../identity";
 
 const response = (status: number, body: unknown) =>
@@ -77,5 +78,47 @@ describe("displayNameFor / canManageBoards", () => {
       canManageBoards({ login: "bob@euidos.ai", name: "Bob", via: "tailnet" }),
     ).toBe(true);
     expect(canManageBoards(null)).toBe(false);
+  });
+});
+
+describe("displayNameFor — 'Wall' is never borrowed", () => {
+  it("does not label a signed-in person as the kiosk when the backend tells us nothing", () => {
+    // via:"access" with an empty login/name used to read "Wall", and so did
+    // every identity if the backend ever added a third named `via` (normalize
+    // fails those closed to "wall" on purpose, for canManageBoards)
+    expect(displayNameFor({ login: "", name: "", via: "access" })).toBe(
+      "Unknown",
+    );
+    expect(displayNameFor({ login: "", name: "Bob", via: "tailnet" })).toBe(
+      "Bob",
+    );
+  });
+
+  it("still shows a real wall identity as Wall", () => {
+    expect(displayNameFor({ login: "wall", name: "", via: "wall" })).toBe(
+      "Wall",
+    );
+    expect(displayNameFor({ login: "", name: "", via: "wall" })).toBe("Wall");
+  });
+});
+
+describe("resolveCollaboratorName", () => {
+  it("is the edge identity — the rule lives here, not in upstream's Collab.tsx", async () => {
+    fetchMock.mockResolvedValue(
+      response(200, { login: "bob@euidos.ai", name: "Bob", via: "tailnet" }),
+    );
+    expect(await resolveCollaboratorName("")).toBe("bob@euidos.ai");
+  });
+
+  it("keeps a name this browser already has when the lookup fails", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    expect(await resolveCollaboratorName("Existing name")).toBeNull();
+  });
+
+  it("falls back to a random name only for a nameless browser with no identity", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    const name = await resolveCollaboratorName("");
+    expect(name).toBeTruthy();
+    expect(name).not.toBe("Wall");
   });
 });

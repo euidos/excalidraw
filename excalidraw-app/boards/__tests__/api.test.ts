@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EuidosSessionError, isSessionError } from "../../data/euidosStorage";
 import {
   BoardsApiError,
+  BoardsTimeoutError,
+  REQUEST_TIMEOUT_MS,
   BoardsConflictError,
   BoardsForbiddenError,
   BoardsNotFoundError,
@@ -216,5 +218,43 @@ describe("error mapping", () => {
 
     const error = await fetchBoards().catch((err) => err);
     expect(isSessionError(error)).toBe(true);
+  });
+});
+
+describe("a backend that never answers", () => {
+  it("aborts the request instead of leaving the page on 'Loading boards…' forever", async () => {
+    vi.useFakeTimers();
+    try {
+      // a hung origin: the socket is accepted, nothing ever comes back
+      fetchMock.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      );
+
+      const pending = fetchBoards().catch((error) => error);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 10);
+      const error = await pending;
+
+      expect(error).toBeInstanceOf(BoardsTimeoutError);
+      // retryable, so NOT the "reload to sign in" path
+      expect(isSessionError(error)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not leave a timer armed for a request that answered", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(response(200, { boards: [] }));
+      await fetchBoards();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

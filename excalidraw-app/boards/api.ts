@@ -96,6 +96,20 @@ export class BoardsConflictError extends BoardsApiError {
   }
 }
 
+/**
+ * 0 — nobody answered. Not a status the backend sent: the request was abandoned
+ * after `REQUEST_TIMEOUT_MS` because a hung origin (a wedged proxy, a container
+ * that accepted the socket and stopped) otherwise leaves the page on "Loading
+ * boards…" for as long as the user is willing to stare at it, with no way out
+ * but a manual reload. A timeout is retryable, so it is NOT a session error.
+ */
+export class BoardsTimeoutError extends BoardsApiError {
+  constructor(message: string) {
+    super(0, "timeout", message);
+    this.name = "BoardsTimeoutError";
+  }
+}
+
 /** 413 — over `MAX_SCENE_BYTES`/`MAX_FILE_BYTES`. */
 export class BoardsTooLargeError extends BoardsApiError {
   constructor(message: string) {
@@ -103,6 +117,15 @@ export class BoardsTooLargeError extends BoardsApiError {
     this.name = "BoardsTooLargeError";
   }
 }
+
+/**
+ * Long enough that a cold container or a slow tailnet hop still wins, short
+ * enough that a wedged one is reported while the user is still watching.
+ */
+export const REQUEST_TIMEOUT_MS = 15_000;
+
+const TIMEOUT_MESSAGE =
+  "euidos storage: the server did not answer in time. Try again.";
 
 const SESSION_ERROR_MESSAGE =
   "euidos storage: your session expired or the server is unreachable — reload this page to sign in again";
@@ -185,11 +208,31 @@ export const request = async <T>(
     init.headers = { "Content-Type": "application/json" };
   }
 
+  // `AbortSignal.timeout()` is not in jsdom, and an explicit controller is what
+  // lets a timeout be told apart from a network failure below.
+  const controller =
+    typeof AbortController === "undefined" ? null : new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (controller) {
+    init.signal = controller.signal;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+  }
+
   let response: Response;
   try {
     response = await fetch(apiUrl(path), init);
   } catch {
-    throw new EuidosSessionError(SESSION_ERROR_MESSAGE);
+    throw timedOut
+      ? new BoardsTimeoutError(TIMEOUT_MESSAGE)
+      : new EuidosSessionError(SESSION_ERROR_MESSAGE);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 
   if (response.status === 204) {

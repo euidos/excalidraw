@@ -76,6 +76,8 @@ import {
 import { FileStatusStore } from "../data/fileStatusStore";
 import { LocalData } from "../data/LocalData";
 import {
+  BOARD_DELETED_MESSAGE,
+  isBoardDeletedError,
   isSavedToFirebase,
   isSessionError,
   loadFilesFromFirebase,
@@ -89,7 +91,8 @@ import {
 } from "../data/localStorage";
 import { resetBrowserStateVersions } from "../data/tabSync";
 import { LIVE_SCAFFOLDING_MS, sweepGhostPlaceholders } from "../voice/persist";
-import { displayNameFor, getIdentity } from "../boards/identity";
+import { resolveCollaboratorName } from "../boards/identity";
+import { registerSceneFlush } from "../boards/leave";
 
 import { collabErrorIndicatorAtom } from "./CollabError";
 import Portal from "./Portal";
@@ -265,6 +268,18 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
     appJotaiStore.set(collabAPIAtom, collabAPI);
 
+    // euidos: leaving a board for the boards index flushes the scene first —
+    // the throttled save holds up to SYNC_FULL_SCENE_INTERVAL_MS of drawing and
+    // no unload path writes it (see boards/leave.ts).
+    registerSceneFlush(async () => {
+      this.queueSaveToFirebase.cancel();
+      await this.saveCollabRoomToFirebase(
+        getSyncableElements(
+          this.excalidrawAPI.getSceneElementsIncludingDeleted(),
+        ),
+      );
+    });
+
     if (isTestEnv() || isDevEnv()) {
       window.collab = window.collab || ({} as Window["collab"]);
       Object.defineProperties(window, {
@@ -281,6 +296,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   };
 
   componentWillUnmount() {
+    registerSceneFlush(null);
     window.removeEventListener("online", this.onOfflineStatusToggle);
     window.removeEventListener("offline", this.onOfflineStatusToggle);
     window.removeEventListener(EVENT.BEFORE_UNLOAD, this.beforeUnload);
@@ -362,6 +378,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       const sessionExpired = isSessionError(error);
       const errorMessage = sessionExpired
         ? SESSION_EXPIRED_MESSAGE
+        : // euidos: "the board was deleted" is not a generic save failure — a
+        // retry cannot help and the drawing only exists in this tab
+        isBoardDeletedError(error)
+        ? BOARD_DELETED_MESSAGE
         : /is longer than.*?bytes/.test(error.message)
         ? t("errors.collabSaveFailed_sizeExceeded")
         : t("errors.collabSaveFailed");
@@ -509,36 +529,15 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
   private fallbackInitializationHandler: null | (() => any) = null;
 
-  /**
-   * euidos: the collaborator name is the EDGE identity, not a free-text field.
-   * `/api/me` is the Access JWT's email (public origin) or the
-   * `Tailscale-User-Login` Serve stamped (tailnet origin); the wall PC carries
-   * neither and shows as "Wall" (collab-plan phase 3 §2).
-   *
-   * Deliberately NOT awaited by `startCollaboration`: a round trip to /api/me
-   * before the socket opens would delay every join by its latency, and the name
-   * reaches peers either way — `setUsername` re-broadcasts our own collaborator
-   * entry once it lands. Upstream's random-username fallback is kept for the
-   * only case it still makes sense in: the identity lookup failed AND this
-   * browser has no name of its own.
-   */
-  private applyEdgeIdentity = async () => {
-    try {
-      this.setUsername(displayNameFor(await getIdentity()));
-    } catch {
-      if (!this.state.username) {
-        const { getRandomUsername } = await import(
-          "@excalidraw/random-username"
-        );
-        this.setUsername(getRandomUsername());
-      }
-    }
-  };
-
   startCollaboration = async (
     existingRoomLinkData: null | { roomId: string; roomKey: string },
   ) => {
-    void this.applyEdgeIdentity();
+    // euidos: the collaborator name is the edge identity (boards/identity.ts).
+    // Not awaited — a /api/me round trip before the socket opens would delay
+    // every join, and `setUsername` re-broadcasts the name when it lands.
+    void resolveCollaboratorName(this.state.username).then(
+      (name) => name && this.setUsername(name),
+    );
 
     if (this.portal.socket) {
       return null;

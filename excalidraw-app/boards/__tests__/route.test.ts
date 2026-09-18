@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { boardLink, hasLink, isBoardsLocation } from "../route";
+import { flushEditorScene, navigation, registerSceneFlush } from "../leave";
+import {
+  boardLink,
+  gotoBoards,
+  hasLink,
+  isBoardsLocation,
+  leaveEditorForBoards,
+  openBoard,
+} from "../route";
 
 const at = (pathname: string, hash = "") =>
   isBoardsLocation({ pathname, hash });
@@ -45,8 +53,89 @@ describe("boardLink", () => {
 });
 
 describe("hasLink", () => {
+  const board = (roomKey: string, id = "board1") => ({ id, roomKey });
+
   it("is false for the pre-phase-1 rows whose room key was never stored", () => {
-    expect(hasLink({ roomKey: "" })).toBe(false);
-    expect(hasLink({ roomKey: "sTdLvpwRhVXVstXJLsGCOA" })).toBe(true);
+    expect(hasLink(board(""))).toBe(false);
+    expect(hasLink(board("sTdLvpwRhVXVstXJLsGCOA"))).toBe(true);
+  });
+
+  it("answers the LINK PARSER, not the backend: a key the editor cannot read has no link", () => {
+    // the backend's ROOM_KEY_RE allows + / = and any length 0-256; upstream's
+    // RE_COLLAB_LINK is [a-zA-Z0-9_-]+ and the key must be 22 chars, so these
+    // would have rendered an enabled "Copy link" to a URL that opens nothing
+    expect(hasLink(board("AAAA+BBBB/CCCCCCCCCC="))).toBe(false);
+    expect(hasLink(board("tooshort"))).toBe(false);
+    expect(hasLink(board("sTdLvpwRhVXVstXJLsGCOAextra"))).toBe(false);
+    expect(hasLink(board("sTdLvpwRhVXVstXJLsGCOA", "bad id"))).toBe(false);
+  });
+});
+
+describe("leaving a live board", () => {
+  let flush: ReturnType<typeof vi.fn>;
+  const real = { assign: navigation.assign, reload: navigation.reload };
+
+  beforeEach(() => {
+    flush = vi.fn().mockResolvedValue(undefined);
+    registerSceneFlush(flush);
+    navigation.assign = vi.fn();
+    navigation.reload = vi.fn();
+  });
+
+  afterEach(() => {
+    registerSceneFlush(null);
+    navigation.assign = real.assign;
+    navigation.reload = real.reload;
+  });
+
+  it("gotoBoards saves the scene BEFORE it navigates (the unload path never saves)", async () => {
+    const order: string[] = [];
+    flush.mockImplementation(async () => {
+      order.push("flush");
+    });
+    (navigation.assign as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      order.push("navigate"),
+    );
+
+    await gotoBoards();
+
+    expect(order).toEqual(["flush", "navigate"]);
+    expect(navigation.assign).toHaveBeenCalledWith(
+      `${window.location.origin}/boards`,
+    );
+  });
+
+  it("Back out of a board flushes and then does a REAL navigation, not an in-place swap", async () => {
+    const order: string[] = [];
+    flush.mockImplementation(async () => {
+      order.push("flush");
+    });
+    (navigation.reload as ReturnType<typeof vi.fn>).mockImplementation(() =>
+      order.push("reload"),
+    );
+
+    await leaveEditorForBoards();
+
+    expect(order).toEqual(["flush", "reload"]);
+  });
+
+  it("opening a board does not wait for a flush — there is nothing on the boards page to lose", () => {
+    openBoard({ id: "abc123", roomKey: "sTdLvpwRhVXVstXJLsGCOA" });
+    expect(flush).not.toHaveBeenCalled();
+    expect(navigation.assign).toHaveBeenCalledWith(
+      `${window.location.origin}/#room=abc123,sTdLvpwRhVXVstXJLsGCOA`,
+    );
+  });
+
+  it("a flush that never resolves does not strand the user on the board", async () => {
+    vi.useFakeTimers();
+    try {
+      flush.mockImplementation(() => new Promise(() => {}));
+      const leaving = flushEditorScene(50);
+      await vi.advanceTimersByTimeAsync(60);
+      await leaving;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

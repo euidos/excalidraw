@@ -51,11 +51,50 @@ export const resetIdentityCache = () => {
  * The wall is a display, not a person: it gets the literal "Wall" both in the
  * boards header and as its collaborator name, never the backend's `wall` login
  * string, which is an implementation detail.
+ *
+ * "Wall" is the ONE label that must never be borrowed by anyone else, so it is
+ * returned only for an identity the backend actually resolved as the wall.
+ * `normalize()` deliberately coerces an unknown `via` to `"wall"` (fail closed
+ * for `canManageBoards`), and a future backend that adds a third named `via`
+ * would otherwise broadcast every signed-in person into their boards as the
+ * kiosk. A named identity with nothing to show reads "Unknown", which is
+ * confusing about one person instead of wrong about the room.
  */
-export const displayNameFor = (identity: Identity): string =>
-  identity.via === "wall"
-    ? WALL_DISPLAY_NAME
-    : identity.login || identity.name || WALL_DISPLAY_NAME;
+export const displayNameFor = (identity: Identity): string => {
+  const named = identity.login || identity.name;
+  if (identity.via === "wall") {
+    return named && named !== "wall" ? named : WALL_DISPLAY_NAME;
+  }
+  return named || "Unknown";
+};
+
+/**
+ * The collaborator name upstream's `Collab` should use, or `null` for "keep
+ * what you have".
+ *
+ * This is the whole of the fork's username rule, kept out of `collab/Collab.tsx`
+ * so that upstream file carries a single call (`euidos/docs/voice-tool-CLAUDE.md`
+ * — every edited upstream line is a future rebase conflict).
+ *
+ * It is a DEFAULT, not an attestation: upstream's share dialog still owns the
+ * field, and `boards/CollaboratorNameField.tsx` is what makes the resolved
+ * identity read-only there. If `/api/me` never answers, upstream's random name
+ * is still better than an empty one — but only for a browser that has no name
+ * of its own, which is the one case that fallback was ever for.
+ */
+export const resolveCollaboratorName = async (
+  currentUsername: string,
+): Promise<string | null> => {
+  try {
+    return displayNameFor(await getIdentity());
+  } catch {
+    if (currentUsername) {
+      return null;
+    }
+    const { getRandomUsername } = await import("@excalidraw/random-username");
+    return getRandomUsername();
+  }
+};
 
 /**
  * `via:"wall"` gets 403 on `PATCH`/`DELETE /api/boards/:id` (RETRO G-P3.1), so

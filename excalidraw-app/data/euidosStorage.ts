@@ -76,6 +76,29 @@ export class EuidosSessionError extends Error {
 export const isSessionError = (error: unknown): boolean =>
   error instanceof Error && error.name === "EuidosSessionError";
 
+/**
+ * Thrown when the board itself is gone: someone deleted it from the boards
+ * index while this tab was drawing in it, and the backend answers every
+ * `PUT /api/rooms/:id` 404 (it deliberately refuses to resurrect a soft-deleted
+ * board). Upstream's generic "Couldn't save to the backend database" is exactly
+ * the wrong thing to tell a person whose work now exists only in their tab —
+ * they need to know that retrying cannot help and that exporting is the only
+ * way to keep the drawing. Phase 3 ships delete without a restore route, so
+ * this is a state a mis-click really can put a colleague in.
+ */
+export class BoardDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BoardDeletedError";
+  }
+}
+
+export const isBoardDeletedError = (error: unknown): boolean =>
+  error instanceof Error && error.name === "BoardDeletedError";
+
+export const BOARD_DELETED_MESSAGE =
+  "This board was deleted, so nothing can be saved to it any more. Export your drawing (main menu → Export image / Save to file) before you close this tab.";
+
 const SESSION_ERROR_MESSAGE =
   "euidos storage: your session expired or the server is unreachable — reload this page to sign in again";
 
@@ -270,6 +293,10 @@ export const saveToFirebase = async (
 
     if (response.status === 409) {
       continue;
+    }
+    if (response.status === 404) {
+      // the board was deleted under us; a retry cannot help (see BoardDeletedError)
+      throw new BoardDeletedError(BOARD_DELETED_MESSAGE);
     }
     if (response.status === 413) {
       // message shape kept compatible with Collab.tsx's size-error detection
