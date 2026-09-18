@@ -4,3 +4,6 @@ public/fonts/
 test-results/
 playwright-report/
 *.log
+
+# The fork's root .gitignore drops every package-lock.json (yarn repo); this app is npm and its lockfile is the build input.
+!package-lock.json
