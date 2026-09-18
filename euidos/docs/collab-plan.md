@@ -117,24 +117,50 @@ detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,EVIDENCE,RETRO}.local.md
    `/api/rooms`); `GET /api/boards` lists it; the public origin answers 302 →
    Access for `/`, `/api/boards` and `/socket.io/`; `/api/health` ok via both.
 
-## Phase 2 — voice tool port
+## Phase 2 — voice tool port — SHIPPED (2026-09-18), acceptance 5 pending
 
-1. `whiteboard/src/*` → `excalidraw-app/voice/` (controller, fit, persist,
-   capture, vad, stt, settings, panel, glyph). Hooks into `excalidraw-app/App.tsx`
-   are the only touchpoints: toolbar button, main-menu "Voice settings…",
-   pointer handlers, `excalidrawAPI`. Keep the file layout upstream-merge
-   friendly (new files, few edited lines).
-2. Persistence sweep (`persist.ts`: interim previews and markers are
-   scaffolding) must also run on the collab load path, not only on reload.
-3. `whiteboard/test/unit` → root vitest (`excalidraw-app/voice/__tests__`);
-   Playwright e2e with the fake mic → `euidos/e2e/`, run against `vite preview`
-   of the app build + the real STT. The round-5 gates (R5a ≤ 400 ms pen-up →
-   words, interim while speaking, revert of a provisional region) must pass.
-4. Kiosk scripts (`kiosk-probe/reload/restore`) → `euidos/scripts/`; the
-   casebook `whiteboard/.re0` → `euidos/casebook` (git mv). Then delete
-   `whiteboard/`.
-5. Acceptance: unit + e2e green; hosted app on the tailnet origin transcribes
-   through `/stt` (Playwright with the fake mic against the live host).
+What landed, as facts for phase 3 and for anyone reading this plan later:
+
+1. The tool is `excalidraw-app/voice/` — the 14 modules and `voice.css` under
+   their 0.1.0 names, plus `VoiceTool.tsx` (the wrapper's `src/App.tsx` wiring
+   as one component). Upstream touchpoints are four and no more:
+   `App.tsx` renders `<VoiceTool excalidrawAPI={…} />` and sweeps the local
+   scene, `components/AppMainMenu.tsx` carries the "Voice settings…" item,
+   `collab/Collab.tsx` sweeps the room scene. No new prop threads through the
+   editor: the menu reaches the panel through the voice module's own store, and
+   the controller subscribes its own pointer handlers via
+   `api.onPointerDown/onPointerUp`.
+2. `sweepGhostPlaceholders` runs on BOTH load paths (G-P2.2): the local/initial
+   scene in `App.tsx initializeScene` (and on `hashchange` re-init), and the
+   collab scene in `Collab.initializeRoom`, right after
+   `euidosStorage.loadFromFirebase` and before reconcile. Deliberately NOT in
+   `_reconcileElements`: a peer seeing someone else's live interim preview is
+   acceptable, a persisted ghost is not. Covered by
+   `voice/__tests__/collab-sweep.test.ts`.
+3. Tests: 179 unit under the root vitest (`yarn vitest run excalidraw-app/voice`,
+   jsdom); the 27 Playwright gates moved to `euidos/e2e/voice/` and run against
+   the BUILD (`vite preview` of `excalidraw-app/build` on `127.0.0.1:4173`) plus
+   the real STT — 27/27 green, no flakes. R5a pen-up → words **85 ms**
+   (gate ≤ 400 ms), STT round trip 1496 ms.
+4. Kiosk scripts are `euidos/scripts/kiosk/`; `deploy.sh` became
+   `deploy-static.sh` and is LEGACY (the wall still serves its own pre-port
+   static build and is frozen until the founder approves the cutover — do not
+   deploy to it, reload it or relaunch it). `copy-fonts.mjs` was NOT ported: the
+   app has its own woff2 pipeline and sets `EXCALIDRAW_ASSET_PATH` itself. The
+   casebook is `euidos/casebook/iteration/0.1.0-voice-areas/`, the spec
+   `euidos/docs/voice-tool-CLAUDE.md`, the runbook
+   `euidos/docs/voice-tool-README.md`. `whiteboard/` is deleted.
+5. STT (G-P2.4): the loopback/else rule in `contracts.defaultSttUrl` is
+   unchanged, so the e2e (127.0.0.1) exercises the DIRECT URL. The proxied
+   branch was measured, not assumed: a real multipart
+   `POST https://euidos-internal.pony-bellatrix.ts.net/stt/v1/audio/transcriptions`
+   with a fixture WAV answered **200 in 1.82 s** with the correct transcript,
+   `/stt/health` warm — nginx's identity-header stripping is transparent to the
+   upload.
+6. Still open: acceptance step 5 — the hosted app on the tailnet origin
+   transcribing through `/stt` with the fake mic against the LIVE host (deploy's
+   job, not the builder's), and 0.1.0's own open rows N13/N17/N18/N20/N21, which
+   moved with the casebook and are NOT closed by this phase (G-P2.5).
 
 ## Phase 3 — boards page and identity
 

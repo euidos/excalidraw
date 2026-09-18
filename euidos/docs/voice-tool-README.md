@@ -1,31 +1,40 @@
-# excalidraw-voice
+# The voice-area tool
 
-A wrapper around `@excalidraw/excalidraw` that adds one tool: **voice area**. Arm it, then draw and talk. A stroke
-**selects a region** — it is not a drawing: while the transcript is on its way the region is faint dashed
-scaffolding (a bounding box, or the line itself) with an animated placeholder inside it, and when the words land the
-scaffolding is deleted, leaving the transcript alone on the canvas at the largest font size that fits the region you
-drew. Strokes never wait for transcripts: several can be in flight at once and results land by element id in
-whatever order they arrive.
+One tool on top of Excalidraw: **voice area**. Arm it, then draw and talk. A stroke **selects a region** — it is
+not a drawing: while the transcript is on its way the region is faint dashed scaffolding (a bounding box, or the
+line itself) with an animated placeholder inside it, and when the words land the scaffolding is deleted, leaving
+the transcript alone on the canvas at the largest font size that fits the region you drew. Strokes never wait for
+transcripts: several can be in flight at once and results land by element id in whatever order they arrive.
 
-**Repo:** this app is the `whiteboard/` directory of the **euidos/excalidraw** fork
-(github.com/euidos/excalidraw, branch `master`); the fork is the project repo so upstream Excalidraw merges in
-(`git fetch upstream && git merge upstream/master`) and our code never lives in a second repository. The working
-clone is on **dev-woo** at `/root/dev_workspaces/excalidraw/whiteboard` (`ssh dev-woo`, key-based root over the
-tailnet). Private, no licence — treat it as the founder's code.
+**Where it lives.** Built in 0.1.0 as a standalone wrapper app (`whiteboard/`) around the published
+`@excalidraw/excalidraw` 0.18.1; ported in 0.2.0 phase 2 into the fork's own app, and the wrapper was deleted. The
+modules are now `excalidraw-app/voice/`, the unit tests `excalidraw-app/voice/__tests__/`, the Playwright gates
+`euidos/e2e/voice/`, the kiosk probes `euidos/scripts/kiosk/`, the casebook
+`euidos/casebook/iteration/0.1.0-voice-areas/`. The spec — the model, the invariants, the never-list — is
+`euidos/docs/voice-tool-CLAUDE.md`; read it before changing anything here.
 
-**The whiteboard** is a wall-mounted touch display in the founder's office driven by a small Ubuntu 24.04 PC
-(tailnet `100.102.3.47`) that boots into Chromium kiosk mode showing a locally served Excalidraw. This app
-replaces the static bundle it serves. Because it reads and writes the **vanilla** excalidraw-app storage keys on
-the same origin (`http://127.0.0.1:8765`), the founder's existing drawings, app state, library and images carry
-over untouched — no import step. On a fresh machine, a new browser profile or any other origin there is simply no
-such storage and the app opens an empty board with defaults; that is the normal fresh-install path, not an error.
+**Repo:** the **euidos/excalidraw** fork (github.com/euidos/excalidraw, branch `master`); the fork is the project
+repo so upstream Excalidraw merges in (`git fetch upstream && git merge upstream/master`) and our code never lives
+in a second repository. The working clone is on **dev-woo** at `/root/dev_workspaces/excalidraw` (`ssh dev-woo`,
+key-based root over the tailnet). Private, no licence — treat it as the founder's code.
+
+**Two surfaces.** The **hosted board** (euidos-internal: `https://euidos-internal.pony-bellatrix.ts.net` on the
+tailnet, `https://board.euidos.ai` behind Access) is the one this code ships to now; boards there are shared and
+persisted through `/api` (`excalidraw-app/data/euidosStorage.ts`), so the voice tool's scaffolding is broadcast to
+peers and swept on every load. The **wall kiosk** is a wall-mounted touch display in the founder's office driven by
+a small Ubuntu 24.04 PC (tailnet `100.102.3.47`) that boots into Chromium kiosk mode against
+`http://127.0.0.1:8765`; it still serves the pre-port static build off its own disk, keeps the founder's board in
+that origin's localStorage, and **is frozen until the founder approves the cutover** — everything below about
+deploying to it is kept for that day, not for today.
 
 ## Setup
 
-Node 22 (matching dev-woo) and npm. Once per clone/checkout:
+Node 22 and yarn 1.22.22 (`corepack enable`), from the fork root:
 
 ```sh
-npm install     # dependencies + the Playwright browser download used by npm run e2e
+yarn install --frozen-lockfile        # only if node_modules is missing/stale
+euidos/scripts/build-app.sh           # → excalidraw-app/build/
+yarn start                            # dev server on :3000 with /api proxied
 ```
 
 ## Using it on the whiteboard
@@ -105,19 +114,19 @@ opens settings, because on the IR frame a "tap" is routinely 700 ms and long-pre
 | Line max / **line min** font size | 36 / 14 | Text along a line shrinks to fit the line, but never below the line minimum: at that floor it wraps to the line's length and grows upward instead of shrinking past legibility. |
 | **Pre-roll (ms)** | 1500 | How long speech may start *before* its stroke and still belong to it. Raise it if you habitually name a box well before drawing it; lower it if labels keep jumping to the next shape. |
 | **Interim results every (ms)** | 1200 | While you are still speaking, the sentence so far is transcribed and previewed in the region at 45% opacity, this long after the previous preview came back. **0 turns previews off** (the final transcript is unaffected). Higher = fewer, longer previews; the preview never becomes the transcript, and a reload always sweeps it. |
-| **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale — both are drawn from the raw RMS the capture emits (`src/level.ts`, full scale 0.06), so what you see is what the VAD compares. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
+| **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale — both are drawn from the raw RMS the capture emits (`excalidraw-app/voice/level.ts`, full scale 0.06), so what you see is what the VAD compares. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
 | **Warm mic on boot** | on | Acquire the microphone at page load so the first arm records instantly. Turn it off if you do not want the mic light on until you arm (the e2e turns it off to time fixtures). |
 
 ### Which stroke selects which region
 
-Recognition is pure geometry on the raw stroke points (`src/stroke.ts`). Gesture thresholds are **screen** pixels:
+Recognition is pure geometry on the raw stroke points (`excalidraw-app/voice/stroke.ts`). Gesture thresholds are **screen** pixels:
 they are divided by the current zoom at the call site, so the same physical gesture recognises the same at any
 zoom.
 
 **The numbers below are a copy, not the source of truth, and they can drift.** The defaults live as JSDoc on
-`RecognizeOptions` in `src/contracts.ts` (`minSize`, `lineDeviation`, `rectFill`, `maxLineAngleDeg`,
-`verticalLineAreaWidth`) and the chord/path rule is `MIN_CHORD_PATH_RATIO` in `src/stroke.ts`; read those two
-files before trusting a number here or recalibrating one — `grep -n 'Default' src/contracts.ts` prints the whole
+`RecognizeOptions` in `excalidraw-app/voice/contracts.ts` (`minSize`, `lineDeviation`, `rectFill`, `maxLineAngleDeg`,
+`verticalLineAreaWidth`) and the chord/path rule is `MIN_CHORD_PATH_RATIO` in `excalidraw-app/voice/stroke.ts`; read those two
+files before trusting a number here or recalibrating one — `grep -n "Default" excalidraw-app/voice/contracts.ts` prints the whole
 set. They are `RecognizeOptions` overrides passed at the call site, not user settings: changing a default means
 editing the contract, which is a design decision, and `test/unit/stroke.test.ts` is what proves the new value.
 
@@ -134,13 +143,16 @@ The 70 % chord/path rule keeps a back-and-forth scribble from reading as a line.
 ## Verifying
 
 ```sh
-npm install     # once, see Setup
-npm test        # vitest: stroke geometry, VAD, assignment, capture, controller, persist, stt — no browser
-npm run build   # tsc --noEmit + vite build (prebuild copies the library fonts into public/fonts)
-npm run e2e     # Playwright: real browser, fake mic fed with the WAVs, REAL STT server, retries: 0
+yarn vitest run excalidraw-app/voice                 # unit: stroke geometry, VAD, assignment, capture, controller,
+                                                     # persist (incl. the collab-load sweep), stt — no browser
+yarn test:typecheck                                  # tsc over the monorepo
+euidos/scripts/build-app.sh                          # the artifact the e2e runs against
+curl -sf http://100.81.33.83:8770/health             # must say warm:true — see below
+cd euidos/e2e/voice && npm run e2e                   # Playwright: real browser, fake mic, REAL STT, retries: 0
 ```
 
-`npm run e2e` starts `vite preview` on `127.0.0.1:4173` itself, but it needs the STT server reachable. **The
+The e2e serves `excalidraw-app/build` with `vite preview` on `127.0.0.1:4173` itself (a stale build is a stale
+run — build first), but it needs the STT server reachable. **The
 suite never checks `/health` itself, so its exit code cannot tell you the server was up.** Always
 `curl -sf http://100.81.33.83:8770/health` first; only then is a result meaningful:
 
@@ -151,20 +163,30 @@ suite never checks `/health` itself, so its exit code cannot tell you the server
 - **A green run is never possible with the server down**, so green does imply STT answered — but a red one tells
   you nothing until you have checked `/health`.
 
-Screenshots land in `test-results/evidence/`, the run log in `test-results/last-run.txt`, the HTML report in
-`playwright-report/`. A flake is a failure: the suite runs with no retries on purpose.
+Screenshots land in `euidos/e2e/voice/test-results/evidence/`, the run log in `test-results/last-run.txt`, the
+HTML report in `playwright-report/`. A flake is a failure: the suite runs with no retries on purpose.
 
-Quick check of a running preview without the full suite: `node scripts/smoke.mjs` (toolbar, debug surface, fonts,
-mic) writes `/tmp/smoke.png`.
+Loopback is load-bearing here: `contracts.defaultSttUrl` dials `100.81.33.83:8770` directly from `127.0.0.1` and
+posts to `<origin>/stt` from anything else, so the suite needs no proxy while the hosted board goes through
+nginx's (identity-stripping) `/stt/` location.
+
+Quick check of a running preview without the full suite: `node euidos/scripts/kiosk/smoke.mjs` (toolbar, debug
+surface, fonts, mic) writes `/tmp/smoke.png`.
 
 ## Deploy
 
-Built on **dev-woo** and copied to the whiteboard (`root@100.102.3.47`) as a static bundle:
+**The hosted board** is the live target: `fleet-infra/scripts/deploy-whiteboard.sh <ref>` builds the fork and
+ships the bundle + the storage image to euidos-internal. Nothing in this directory deploys it.
+
+**The wall kiosk (LEGACY, frozen).** Everything from here to the end of "Probing the live kiosk" describes the
+static path that shipped `whiteboard/dist` to `root@100.102.3.47`. `whiteboard/` no longer exists, so
+`euidos/scripts/kiosk/deploy-static.sh` cannot run as written and **must not be run**: the kiosk keeps serving its
+last build and the founder's board lives in that page's storage. Kept verbatim because the host facts (units,
+paths, CDP, rollback) are still true and the cutover will need them.
 
 ```sh
-npm run build
-scripts/deploy.sh              # build + rsync dist/ + restart the kiosk
-scripts/deploy.sh --no-build
+euidos/scripts/kiosk/deploy-static.sh              # LEGACY — do not run
+euidos/scripts/kiosk/deploy-static.sh --no-build   # LEGACY — do not run
 ```
 
 **Access required:** `100.102.3.47` is a **Tailscale-only** address — plain `ssh` from outside the tailnet hangs
@@ -211,7 +233,7 @@ ssh root@100.102.3.47 'systemctl --user -M euidos@ restart excalidraw-ui.service
 ```
 
 A restart that leaves the screen unchanged usually means Chromium reopened the **cached** page; bundle names are
-content-hashed, so a hard reload over CDP (`scripts/kiosk-probe.mjs`, which prints the loaded URL and
+content-hashed, so a hard reload over CDP (`euidos/scripts/kiosk/kiosk-probe.mjs`, which prints the loaded URL and
 `status()`) tells you which build is really in the browser.
 
 **Going back to the last known-good build.** Nothing on the whiteboard remembers the old code, so the rollback is
@@ -220,8 +242,8 @@ a rebuild on dev-woo:
 ```sh
 ssh root@100.102.3.47 'rsync -a --delete /home/euidos/excalidraw.prev/ /home/euidos/excalidraw/'  # if you took the copy
 git log --oneline -10                 # pick the last commit that was deployed and worked
-git checkout <good-commit> -- src public index.html   # or: git stash && git checkout <good-commit>
-npm run build && scripts/deploy.sh --no-build
+git checkout <good-commit> -- whiteboard   # only a pre-port commit still has that tree
+# then build it in a throwaway worktree and rsync from there
 ```
 
 Then restore your working tree (`git checkout main -- .` / `git stash pop`). Whichever way you go back, the
@@ -235,7 +257,7 @@ Open the CDP tunnel from dev-woo once, then run any probe against it:
 
 ```sh
 ssh -f -N -L 9223:127.0.0.1:9222 root@100.102.3.47
-node scripts/kiosk-probe.mjs /tmp/kiosk.png [--stroke]
+node euidos/scripts/kiosk/kiosk-probe.mjs /tmp/kiosk.png [--stroke]
 ```
 
 | Probe | What it answers |
@@ -244,7 +266,7 @@ node scripts/kiosk-probe.mjs /tmp/kiosk.png [--stroke]
 | `kiosk-mic-check.mjs` | Records 3 s from **every** audio input and reports blob bytes, decoded duration, sample rate and peak. Use when a mic is present but produces nothing. |
 | `kiosk-blob-check.mjs` | Arms and disarms the app's own controller with no stroke (the orphan path) while intercepting the upload: what was actually POSTed (bytes, decoded seconds) and what the server answered. Use when transcripts come back empty or wrong. |
 | `kiosk-offset-check.mjs` | Independent of the app: opens the mic, waits 20 s, records 3 s, sends it straight to the STT server. Separates "our capture is wrong" from "this mic/server is wrong", and shows the round-trip latency. |
-| `stt-abort-check.mjs` | Not a kiosk probe: fires two requests at the STT server from a real Chromium page and aborts the second while it is queued behind the GPU, then checks that `/health.skipped` went up. Run it after any change to the server's locking, and start `npm run preview` first (the page has to come from a real origin). |
+| `stt-abort-check.mjs` | Not a kiosk probe: fires two requests at the STT server from a real Chromium page and aborts the second while it is queued behind the GPU, then checks that `/health.skipped` went up. Run it after any change to the server's locking, and serve a build first (the page has to come from a real origin). |
 
 (There is no `kiosk-clear.mjs` any more. It wiped the founder's live board on 2026-09-18 and was deleted; a probe
 may only remove elements it created itself, by id.)
@@ -266,7 +288,7 @@ utterance never waits behind previews of itself.
 
 ## Test clips
 
-`test/fixtures/` holds real 16 kHz mono WAVs used as Chromium's fake microphone: `jfk.wav` (11 s English),
+`euidos/e2e/voice/fixtures/` holds real 16 kHz mono WAVs used as Chromium's fake microphone: `jfk.wav` (11 s English),
 `en-short`/`en-long`, `ko-short`/`ko-long`/`ko-mixed` (Korean TTS), and `three-utterances.wav` — three labels
 separated by real silence, with `three-utterances.json` naming the words expected in each shape; that one is what
 proves attribution. `jfk-dense.wav` and `silence.wav` are generated on first use by the e2e helpers.
@@ -276,7 +298,7 @@ proves attribution. `jfk-dense.wav` and `silence.wav` are generated on first use
 - **The tool will not arm.** That is the mic channel doing its job: the toast and `status().lastError` say
   whether it was denied, missing or errored. On the kiosk that usually means the launcher lost
   `--use-fake-ui-for-media-stream`, or snap Chromium's `audio-record` interface is disconnected; in a normal
-  browser, allow the microphone for the origin. Confirm the hardware with `scripts/kiosk-mic-check.mjs`, then
+  browser, allow the microphone for the origin. Confirm the hardware with `euidos/scripts/kiosk/kiosk-mic-check.mjs`, then
   pick the right input in the settings panel.
 - **It arms but hears nothing / every burst is dropped.** Open the settings panel and watch the level bar while
   talking: if the bar barely moves, it is the input device; if it moves but stays under the threshold marker,
@@ -295,9 +317,11 @@ proves attribution. `jfk-dense.wav` and `silence.wav` are generated on first use
   4. Down longer: ask the founder — it is their desktop and nobody else can power it on. Meanwhile the app
      degrades honestly (a failed take KEEPS its dashed region marker and shows ⚠ STT, audio held for retry until
      reload) and the e2e transcript assertions are meaningless.
-- **Boxes render but the text is Helvetica.** The bundled fonts are missing from the deploy: `npm run build` runs
-  `scripts/copy-fonts.mjs`, which copies the library's `dist/prod/fonts` into `public/fonts`; they must end up at
-  `/fonts` on the server, with `window.EXCALIDRAW_ASSET_PATH = "/"` (set in `index.html`).
+- **Boxes render but the text is Helvetica.** The webfonts did not load, and text metrics are font metrics, so the
+  fitted sizes will be wrong too. In this app the fonts are the APP's own pipeline (`woff2BrowserPlugin` in
+  `excalidraw-app/vite.config.mts`, emitted to `build/fonts/`, with `window.EXCALIDRAW_ASSET_PATH` set in
+  `index.html`) — there is no `copy-fonts` step any more. Check that `build/fonts/` shipped and that
+  `document.fonts.check("20px Excalifont")` is true after a `document.fonts.load`.
 - **Old drawings missing.** The app reads the vanilla keys `excalidraw`, `excalidraw-state`, `excalidraw-library`,
   `excalidraw-theme` and the `files-db` IndexedDB store — all per-origin, so the app must be served from the same
   origin as before (`http://127.0.0.1:8765`). A different port, hostname or profile shows an empty board; the old

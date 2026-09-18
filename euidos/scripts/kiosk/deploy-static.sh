@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
+#
+# ============================== LEGACY — DO NOT RUN ==============================
+# This is the STATIC path that shipped `whiteboard/dist` to the wall kiosk
+# (100.102.3.47), kept verbatim until the wall is cut over to the hosted board.
+# `whiteboard/` no longer exists in this repo, so `npm run build` and
+# `dist/index.html` below refer to a tree that is gone: as written this script
+# CANNOT run, and it must not be made to. The kiosk still serves the last static
+# build off its own disk and keeps the founder's board in that page's
+# localStorage; the cutover is deferred and needs the founder's go (collab-plan
+# phase 2). Until then: do not deploy to, reload, or relaunch that kiosk.
+# To resurrect it, build an older commit of whiteboard/ in a worktree and rsync
+# from there — the rest of this file (paths on the kiosk, the CDP reload, the
+# --restart path) is still accurate about the HOST.
+# The hosted board deploys with fleet-infra/scripts/deploy-whiteboard.sh instead.
+# =================================================================================
+#
 # Deploy the built app to the whiteboard kiosk.
-#   scripts/deploy.sh                 build + rsync + reload the kiosk page over CDP
-#   scripts/deploy.sh --no-build      rsync + reload only
-#   scripts/deploy.sh [...] --restart kill + relaunch Chromium instead of reloading (launcher flags changed)
-#   scripts/deploy.sh [...] --force   reload even while the board looks in use (see kiosk-reload.mjs)
+#   deploy-static.sh                 build + rsync + reload the kiosk page over CDP
+#   deploy-static.sh --no-build      rsync + reload only
+#   deploy-static.sh [...] --restart kill + relaunch Chromium instead of reloading (launcher flags changed)
+#   deploy-static.sh [...] --force   reload even while the board looks in use (see kiosk-reload.mjs)
 # Target: root@100.102.3.47, static dir /home/euidos/excalidraw served by the user unit excalidraw.service
 # (python http.server on 127.0.0.1:8765). The kiosk Chromium is spawned by ~/.config/autostart/excalidraw.desktop →
 # /usr/local/bin/excalidraw (directly under the session, NOT as a transient unit after a reboot), so a plain
@@ -33,6 +49,6 @@ else
   ssh -f -N -o ExitOnForwardFailure=yes -L 9223:127.0.0.1:9222 "$HOST"
   trap 'pkill -f "L 9223:127.0.0.1:9222" || true' EXIT
   sleep 1
-  node scripts/kiosk-reload.mjs $FORCE
+  node "$(dirname "$0")/kiosk-reload.mjs" $FORCE
   echo "deployed; kiosk page reloaded"
 fi

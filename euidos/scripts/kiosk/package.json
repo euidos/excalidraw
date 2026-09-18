@@ -1,0 +1,10 @@
+{
+  "name": "@euidos/kiosk-scripts",
+  "private": true,
+  "version": "0.0.0",
+  "description": "CDP probes for the wall kiosk + a local smoke check. Needs @playwright/test resolvable FROM THIS DIRECTORY (node resolves an ESM import against the file's own path, not the cwd): run `npm install` here once, or symlink ../../e2e/node_modules. See euidos/docs/voice-tool-CLAUDE.md.",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
