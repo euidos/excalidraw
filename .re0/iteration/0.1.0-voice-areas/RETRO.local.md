@@ -1,4 +1,4 @@
-# RETRO — 0.1.0 voice-areas (current, after round 3)
+# RETRO — 0.1.0 voice-areas (current, after round 4)
 
 One document, rewritten each round. Lessons that still bite stay below in their current form; the ones a later
 gate actually closed are in **Closed** at the end with the gate that closed them.
@@ -17,6 +17,20 @@ one scale, N10 rendered drop, N11 recovery, the amara.org blocklist gap, dead `F
 upload filename — then a re-drive. Result: unit **88 → 109**, e2e **23/23** (retries 0, real STT, `/health`
 answered `{ok:true, model:large-v3-turbo, warm:true}` before the run), `npm run build` clean. No new defect class
 was discovered; every item was already written down. That is the finding of round 3 (L9).
+
+Round-4 cycle shape (four founder requests, two builders in parallel, two adversarial lenses, one fixer, one cold
+run): builder A took request 1 (shapes are region selection, not drawings) and builder B took requests 2–4 (mic
+glyph, main-menu settings, ko/en languages) against the SAME `src/contracts.ts`, disjoint files, no cross-edits —
+both reported green (23/23 → 24/23, unit 109 → 138). Two lenses then drove the shipped bundle by hand: a
+"correctness of the region lifecycle" lens running a **hate stance** (state the load-bearing objection first, do
+not soften it) found two MUST defects builder A's own green suite could not see because both are destructive
+paths the nominal sequence never exercises; a **wall-panel founder** persona lens (65", 1–3 m, stylus only, no
+keyboard) rendering the ACTUAL settings panel at 4×DPI found a MUST rendering defect (every `var(--color-*)` in
+the panel's CSS resolves to nothing outside `.excalidraw`) that no assertion-based test had a way to catch, because
+nothing had asked what the panel's computed paint actually was. One fixer applied 12 of 15 findings (3 explicitly
+skipped with a written reason each — see L13), re-drove to unit **150/150** (12 files), e2e **24/24**, `npm run
+build` clean, and updated CLAUDE.md/README.md/the casebook itself as part of the same commit. A same-day cold run
+(no files touched) reconfirmed all counts and found zero new failures — this memo is the step after that.
 
 ## What earned reuse
 
@@ -131,6 +145,54 @@ Gate (N14): a row may only say "accepted" with a named owner and the round numbe
 row whose fix is estimated at one contract line or one blocklist entry may not say "accepted" at all — it is
 *unmet*. Every round's planning step reads the open-rows table before the gate list.
 
+**L10 — Two builders on disjoint files can each satisfy their own request and jointly violate an invariant
+neither owned.**
+Builder A made "a region is deleted the moment its words land" true; builder B (in the same round, on different
+files) never touched that path. Nobody was assigned "does deleting-on-first-utterance interact with a founder who
+draws several boxes before speaking into any of them" — it fell between two request-scoped build lanes, and both
+builders' own green suites passed because the nominal sequence (draw, then immediately speak) never exercises two
+open regions at once. The lens that found it was not reviewing "correctness" in general; it was told to hold a
+**hate stance** on one named lens — the region lifecycle — and state a load-bearing objection before anything
+else. Same shape as L1/L3 (a destructive predicate untested on its false branch), but the new fact is *where* the
+gap came from: request-scoped ownership, not a missing test in one module.
+Gate (N15): when a round splits founder requests across builders, the memo step names every pair of requests that
+could touch the SAME piece of mutable state (here: "region marker lifecycle" was touched by request 1's build and
+implicitly assumed stable by nothing else) and writes one cross-request case for each pair before the round closes
+— not delegated to whichever lens happens to run.
+
+**L11 — A builder's own "verified" claim is uncorrelated with the correctness of a destructive path; only a lens
+built to distrust it finds those.**
+Both round-4 build reports used confident, specific language ("nothing but the words remains", "23/23 verified in
+the browser") about the exact mechanism the hate-stance lens then broke in one sitting. This is not a claim of
+dishonesty — the reported tests really were green — it is that a builder narrates from the nominal path by
+construction (they built it to work), so their own confidence is not evidence about the destructive branch. This
+generalizes L1: L1 said the *gate* must cover the false branch; L11 says the *review step* must be staffed by a
+lens whose brief is explicitly adversarial to the artifact, because a same-side reviewer inherits the builder's
+blind spot for free.
+Gate: any round with a build step also runs at least one lens whose brief states a stance (hate/adversarial) on a
+NAMED dimension before it reads a single line of the diff — not a generic "review this" pass.
+
+**L12 — An enumerated value-set crossing a client/server boundary is the same unowned-seam class as a scale
+(L6), and needs the same cross-check.**
+`ALLOWED_LANGUAGES` (client) and `STT_LANGUAGES` (server) encode the same fact twice with nothing comparing them;
+`/health` does not report the server's list. L6 closed this exact class for a *scale* (raw RMS vs. display gain,
+one function owns the mapping); the enumerated-set form was not recognised as the same bug family and shipped
+anyway, so it is now an open row rather than a closed gate.
+Gate (N16): every enumerated value that must agree across a network boundary is reported by the producer
+(`/health` returns `languages`) and checked by a script the smoke/build step runs (`scripts/smoke.mjs` fails on a
+mismatch), not left as two literal arrays with a comment pointing at each other.
+
+**L13 — A skipped fix with a written reason is not the same failure as an unrecorded one, and the memo must keep
+that distinction instead of flattening both to "still open".**
+The round-4 fixer left 3 of 15 lens findings unapplied (the native multi-point line, the VAD noise-floor seeding,
+the client/server language sync) and wrote why each was deliberately deferred rather than missed: each needs its
+own gate/redeploy, not a drive-by edit inside a UI round. That is different from round 3's L9 finding (an
+"accepted" row with no owner, functioning as a way to stop looking) — these three DO have an owner and a
+re-decide round. The risk is that a memo written carelessly re-labels all open items identically and destroys the
+distinction the fixer just made.
+Gate: EVIDENCE rows distinguish "unmet, no owner" from "accepted, owner X, re-decide round N" (N14, unchanged) —
+this round's memo must preserve the fixer's own labels, not re-flatten them.
+
 ## Anti-patterns (failure mode → catching gate)
 
 | Anti-pattern | Failure mode observed this round | Gate |
@@ -165,6 +227,29 @@ row whose fix is estimated at one contract line or one blocklist entry may not s
   capture path and re-measured nothing on the panel.**
 - **N14 Accepted-row hygiene** — an "accepted" row carries an owner and the round it is re-decided in; a one-line
   fix may not be accepted; planning reads the open-rows table first (L9).
+- **N15 Cross-request invariant case** — when a round splits founder requests across builders, the memo names
+  every pair of requests touching the same mutable state and writes one cross-request case per pair before the
+  round closes (L10).
+- **N16 Client/server enumerated-value sync** — an enumerated value that must agree across a network boundary is
+  reported by the producer and checked by an automated script, not left as two independent literal lists (L12).
+  Concretely: `/health` returns `languages`, `scripts/smoke.mjs` fails on a mismatch against `ALLOWED_LANGUAGES`.
+- **N17 Native multi-point conversion** — a native line/ellipse/diamond drawn while armed must convert to a
+  region marker on ELEMENT FINALISATION, not on every intermediate `pointer-up`; today only the native RECTANGLE
+  path has e2e coverage, so the line tool's first-segment-as-marker defect ships un-gated. **Unmet, owner: main
+  loop** (round 4c looked at this and declined a 15-minute fix because the obvious guard risks never finalising
+  the line at all — needs a deferred "convert when finalised" path plus a new e2e case).
+- **N18 VAD noise-floor seeding** — a stream opened mid-utterance seeds its noise floor from voiced frames, so the
+  effective threshold (3× floor) can sit above the level for ~4.7 s: the glyph fills but never turns green.
+  **Accepted, owner: main loop, re-decide round 5** (mitigated today by `warmMicOnBoot` defaulting on; the real
+  fix is a percentile/minimum seed in `vad.ts` with its own unit gate, not a drive-by edit).
+- **N19 Undo-after-commit residue** — one Ctrl+Z after a commit no longer resurrects the region marker
+  (round-4c's `NEVER` split fixed the destructive half), but a SECOND undo still leaves the reused placeholder "·"
+  text alive with no owning session until the next reload's sweep. **Accepted, owner: main loop, re-decide round
+  5** — a live but ownerless placeholder between commit-undo and reload is cosmetic (a reload always cleans it),
+  but it is the kind of "accepted" row L9/N14 says needs a name and a date, not just a mention.
+- Carried forward, still open: **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy
+  on the panel; round 4 touched neither `capture.ts` nor `vad.ts`'s audio-graph internals, so this is unchanged
+  since round 3 and remains the only gate standing between the audio path and "proven" (L8).
 - Carried forward unchanged: **N8 evidence integrity** (retries 0, log at the cited path, every path verified).
 
 ## Vocabulary for the next agent
@@ -192,7 +277,58 @@ New in round 3:
 - **accepted row** — a risk parked without a test. Only legitimate with an owner and a re-decide round (N14);
   otherwise it is an *unmet* row wearing a decision's clothes (L9).
 
+New in round 4:
+
+- **region marker** — the dashed, `customData.voiceRegion`-stamped scaffolding a stroke produces. Never call it
+  "the shape" or "the container" any more: a marker is deleted by the commit that replaces it or by the disarm
+  sweep, and the words that land are a FREE text, unbound (`containerId: null`).
+- **hate-stance lens** — a review pass briefed to state one load-bearing objection on a NAMED dimension before
+  reading the rest of the diff. Distinct from a generic "review this" pass (L11): the brief itself is what makes
+  it find destructive-path defects a same-side reader inherits blindness to.
+- **persona lens** — a review pass that renders the actual artifact under a named real-world condition (device,
+  distance, input modality) and reports what that condition actually shows, rather than reasoning about the code.
+  Found the settings panel's undefined CSS variables and the mic glyph's wall-legibility problems — defects no
+  assertion-based test had a way to phrase.
+- **cross-request invariant** — a piece of mutable state two different founder requests, built by two different
+  builders, both touch or assume stable. Not owned by either builder's request scope by default (L10); the memo
+  step must name these pairs explicitly.
+
 ## Closed (a later gate retired these)
+
+### Retired by round 4c
+
+- **N2e/L3 — pre-roll deadline across a live stroke.** Closed: `runAssignment` now treats
+  `currentStroke?.session === owner` like a queued conversion (the flush barrier now covers the *consumer*, not
+  only the producer), and `convertStroke`'s `finally` re-runs it. Proof: `test/unit/controller.test.ts` → "gate
+  N2e — a stroke that is still under the pen when the deadline passes"; verified to fail (`orphans: 1`, region
+  deleted under a "No speech heard" toast) with the pre-fix guard restored. Not reachable from the e2e — the
+  slowest scripted stroke is ~0.4 s against a 1.5 s pre-roll — which is why it survived two rounds as a
+  browser-only-looking gate that was actually a `test/unit` gate the whole time.
+- **The round-4a regression this closure also caught: "closing wired straight to deleting."** Round 4a made "a
+  region nobody spoke into" die the moment ANY later utterance committed elsewhere (`isSuperseded` doubled as the
+  delete trigger), erasing every box the founder drew before the first spoken label while still latched. Closed:
+  a region is deleted by its own COMMIT or by the DISARM sweep (one undoable update, one counted toast); closing
+  only stops assignment. Proof: `test/unit/controller.test.ts` → "a region the founder drew and never spoke into"
+  (survives while latched, only the disarm removes it) + "sweeps several at once with a toast that counts them".
+- **A report written over its own payload.** Closed: `fit.markFailed` returns `[]` once the text already carries
+  a landed transcript. Proof: `test/unit/fit.test.ts` → "never writes over words that already landed";
+  `test/unit/controller.test.ts` → "leaves an orphan's transcript alone when a later take into it fails".
+- **Litter decided by reading content.** Closed: `customData.voiceFailed` stamps a failure warning, cleared by a
+  commit; `persist.ts` sweeps by the stamp, never by matching "⚠ STT" text, so a founder-typed warning survives a
+  reload untouched. Proof: `test/unit/persist.test.ts`, `test/unit/fit.test.ts` (stamp/clear-stamp cases).
+- **One axis answering two questions.** Closed: `level.ts` owns `meterPercent` (settings bar) and `glyphLevel`
+  (mic glyph) as two named functions on two named scales, after the wall-panel lens measured ordinary speech
+  pinning the glyph at 100 % on the settings-panel's 0.06 axis. Proof: `test/unit/level.test.ts`, and the e2e
+  "toolbar latch" case now asserts at least three DISTINCT partial levels rather than a binary on/off.
+- **A surface rendered outside its variable scope.** Closed: every `var(--color-*)` the settings panel's CSS
+  reads now carries a literal fallback, because the panel renders outside `.excalidraw` where the library's theme
+  variables do not exist. Proof: the main-menu e2e case now asserts the level bar's fill and the action buttons'
+  COMPUTED background color and the inputs' computed border are non-default, not just that a class name is
+  present.
+- **A gate that provides its own precondition.** Closed: `fit.warmFonts()` (measure once, then
+  `document.fonts.ready`, cached) is awaited by `App` at boot and by `armBody` before arming; the two e2e fit
+  gates now call that instead of doing their own in-page font warm-up, so the gate no longer passes under a
+  precondition production never provided.
 
 ### Retired by round 3
 

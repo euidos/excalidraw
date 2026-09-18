@@ -4,7 +4,15 @@ Gate rows for rounds 2–3. Statuses read back from `test-results/last-run.txt` 
 `/health` answered `{ok:true, model:large-v3-turbo, warm:true}` before the run), the unit run (**109/109**, was
 88), the two round-2 review lenses and the round-2/3 fixes. Every path below was confirmed present on disk at
 memo time; the unit counts were re-run at memo time (`npm test` → `Tests 109 passed (109)`). Caveats live in
-RETRO.local.md (L1–L9); a row's caveat is the product behaviour the gate did not reach, not a hedge.
+RETRO.local.md (L1–L12); a row's caveat is the product behaviour the gate did not reach, not a hedge.
+
+Round-4 cold-run re-confirmation (2026-09-18, no files modified by the run): `npm run build` clean, `npm test`
+**150/150** (12 files — was 109), `npm run e2e` **24/24** (was 23 — one row grew, none dropped), STT `/health`
+checked before and after (`{"ok":true,"model":"large-v3-turbo","warm":true}`). All four round-4 gates (G9–G12,
+below) reconfirmed rather than re-derived. The working tree itself was NOT clean at cold-run time — untracked/
+modified files under `scripts/` (`deploy.sh`, `kiosk-reload.mjs`, `kiosk-restore.mjs`, a staged deletion of
+`kiosk-clear.mjs`) predate this memo and are outside its scope; noted so a later round does not mistake them for
+memo output.
 
 Provenance note for N8: the round-3 working tree was swept into an unrelated commit (`cd5e1cb`, kiosk acoustic
 probe) by another process mid-round. Nothing in the evidence below depends on that commit — the cited proof is
@@ -67,6 +75,19 @@ checked before AND after the run; log `test-results/last-run.txt`, screenshots `
 | 4b-R2 Settings live in the main menu, no top-right gear (founder request 3) | the gear is gone, the vanilla menu is intact, the panel opens from the menu and is usable | **met** | `test/e2e/voice.spec.ts` "settings live in the main menu" → `voice-settings-gear` count 0, every `DefaultMainMenu` testid present plus `menu-voice-settings`, the panel visible (`evidence/round4b-menu-settings.png`, `round4b-main-menu.png`). Round 4c added the usability half: the panel renders OUTSIDE `.excalidraw`, so the same test now asserts the level bar's fill and the action buttons have a non-transparent background and the inputs a `solid 1px` border (they resolved to nothing, i.e. invisible controls on a console-less wall panel), and that a tap outside or Escape closes the panel while drawing nothing on the board. |
 | 4b-R3 Korean and English only (founder request 4) | ja/zh cannot be selected, stored or sent, and the server enforces the same list | **met** | `test/e2e/voice.spec.ts` "settings live in the main menu" asserts the select's options are exactly `["", "ko", "en"]`; `test/unit/settings.test.ts` coerces a stored `ja`/`zh` back to auto; the STT server's `STT_LANGUAGES` allow-list answers `language=ja` with 400 before reading the body and ranks auto-detection over the same list. Residue (accepted, owner: main loop, re-decide round 5): the two lists are independent sources of truth — `/health` does not report `STT_LANGUAGES`, so a server-side change diverges silently. |
 | 4c-R6 Fitting waits for the fonts | no take is fitted against fallback metrics, and no gate assumes a precondition production does not provide | **met** | `fit.warmFonts()` (measure once, then `document.fonts.ready`, cached) is awaited by `App` at boot and by `armBody` before the mic is opened; the two fit gates that used to warm the font *inside the page* now call `voice.fit.warmFonts()`, i.e. the app's own path, and the test-private `document.fonts.ready` lines are gone (`test/e2e/voice.spec.ts` G1 `refit`, G4a). |
+
+## Round-4 gate index (G9–G12, DESIGN.local.md's numbering — cross-referenced, not duplicated)
+
+The four founder requests each got a cycle-level gate number continuing G1–G8; the detailed proof for each already
+lives in the 4a/4b/4c rows above (round-4 built in three passes, not four gates), so this table points at that
+proof rather than re-stating it.
+
+| Gate | Founder request | Status | Proof (see row above) |
+| --- | --- | --- | --- |
+| G9 region lifecycle | 1 — shapes are region selection only, not drawings | **met** | 4a-R1, 4c-R1, 4c-R3, 4c-R4, 4c-R5 |
+| G10 mic glyph | 2 — mic icon animates with the audio volume | **met** | 4b-R1 |
+| G11 settings location | 3 — settings move into the top-left main menu, gear removed | **met** | 4b-R2 |
+| G12 language allow-list | 4 — ja/zh removed, client + server | **met** | 4b-R3 |
 
 ## Open rows — defects and untested risks (RETRO L5: every risk exits as a row)
 

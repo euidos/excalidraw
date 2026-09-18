@@ -103,3 +103,66 @@ Gates added (from RETRO.local.md): N2 boundary-race, N3 visible failure, N5 zoom
 assignment by words, N7 single contract (no unreferenced module in src/), N8 evidence integrity. G4's growth
 behaviour stays: a shape too small for even the floor font size is grown by the library (documented, not silent:
 the placeholder turns solid and the text is committed; the founder sees the box grow).
+
+## Round 4 — four founder requests (quoted verbatim)
+
+1. "When drawing ovals or shapes, it's just for region selection, not actually drawing the shape itself. Once the
+   text is written, those shapes need to disappear. Since the goal is simply region selection rather than drawing
+   shapes, you should just calculate a bounding box so the font fits inside it. Please update that."
+2. "When you press the mic button, it's hard to tell whether the microphone is actively picking up audio. It
+   would be great to add an animation to the mic icon itself that reacts to the audio volume, indicating that
+   voice input is being recognized."
+3. "Placing the settings button in the top right wasn't a bad call, but I think it would be better to put it as
+   one of the items in the top-left menu (where options like Open, Save to, and Reset the Canvas are located).
+   Please remove the settings button you added to the top right."
+4. "Also, please remove Chinese and Japanese from the available languages since we won't be using them. (Make
+   sure this is updated on the API side as well if needed.)"
+
+### Decisions taken
+
+- **Request 1 → region markers, not shapes.** A stroke (or a native rectangle/ellipse/diamond/line drawn while
+  armed) produces a **region marker**: dashed, `customData.voiceRegion` stamped, transparent fill — never the
+  founder's finished shape. Areas are always fitted (and marked) as a rectangle on the stroke's *bounding box*,
+  even when `stroke.ts` recognises an ellipse (per the brief: "just calculate a bounding box", not an inscribed
+  ellipse). When the transcript lands, `fit.ts` binary-searches the largest font size whose library layout leaves
+  a throwaway probe container unchanged, commits the result as a FREE text element (`containerId: null`,
+  `autoResize: false`), and deletes the marker in the SAME undoable update as the text — nothing but the words
+  remains. Only a *failed* take keeps its marker (dashed) so the retry button has a visible target; `fit.markFailed`
+  refuses to overwrite a transcript that already landed (round-4c fix, RETRO L10/L11 below).
+- **Request 2 → the glyph itself is the level meter, on its own scale.** `VoiceStatus` gained `speaking` (true
+  between VAD onset and offset, false whenever `mode === "idle"` by construction); the mic capsule fills from the
+  bottom via an SVG clipPath scaled by `--voice-level`, and a ring around it grows with the same number; both turn
+  green while `speaking`. `recording` ("the stream is open") and `speaking` ("the VAD kept this") stay two signals
+  because a fill that never turns green is a VAD-threshold problem, not a dead mic. Round-4c narrowed this to two
+  named axes in `level.ts` — `meterPercent` (settings bar, full scale 0.06, the VAD slider's own range) and
+  `glyphLevel` (mic glyph, full scale 0.25, sqrt-compressed) — after the wall-panel lens measured ordinary speech
+  pinning the glyph at 100 % on the settings-panel axis, i.e. a strobe, not an animation.
+- **Request 3 → settings move into the top-left main menu; the top-right gear is deleted.** `App.tsx` renders a
+  `<MainMenu>` child of `<Excalidraw>` that reproduces the library's own fallback `DefaultMainMenu` composition
+  item for item (Open/Export/Reset canvas/etc., same `UIOptions.canvasActions` guards) plus a "Voice settings…"
+  row after "Reset the canvas". `renderTopRightUI`, `GEAR_STYLE` and `voice-settings-gear` no longer exist in the
+  code (the e2e asserts the testid count is 0). `ToolbarOptions.onOpenSettings` was deleted round-4c once nothing
+  called it — no gesture on the toolbar button opens settings any more.
+- **Request 4 → ko/en only, enforced on both sides.** The settings panel offers auto/ko/en; `settings.ts`
+  coerces any stored value outside `ALLOWED_LANGUAGES` (including a leftover "ja"/"zh") back to auto, because
+  `controller.ts` posts `settings.language` straight to the server — a panel-only fix would leave old localStorage
+  values 400ing. The STT server (`stt-server/server.py`) gained `STT_LANGUAGES` (default `ko,en`); with no
+  explicit language the auto-detector ranks only the allow-listed candidates (fixes Korean occasionally coming
+  back transcribed as Japanese, which restricting the *request* alone would not); an explicit disabled language
+  answers 400 before the audio is even decoded. Deployed to stt-desktop and proved live (ko/en pass, `language=ja`
+  → 400). Residue (RETRO L12/N16): the two allow-lists are independent sources of truth — `/health` does not
+  report `STT_LANGUAGES`, so a server-side change can diverge from the client silently.
+
+### Gates added
+
+G9 region lifecycle — a region marker is deleted by its own commit or by the disarm sweep, never by a mid-session
+   predicate written for something else (`isSuperseded` only stops assignment); a failed take never overwrites a
+   landed transcript; a stamped `customData.voiceFailed` warning is swept by the stamp, never by reading its text.
+G10 mic glyph — the glyph tracks `--voice-level` and turns the accent colour only while `speaking`; at least three
+   distinct partial levels are observed in one utterance (not a strobe); readable at wall-panel distance (glyph
+   SVG forced to 22 px against the library's 16 px default).
+G11 settings location — zero `voice-settings-gear` on the board; every vanilla `DefaultMainMenu` testid survives;
+   "Voice settings…" opens the same panel from the menu; the panel's own colours resolve to something visible
+   outside the `.excalidraw` subtree.
+G12 language allow-list — the language `<select>` offers exactly `["", "ko", "en"]`; a stored ja/zh heals to auto
+   on load; the STT server answers a disabled language with 400 and ranks auto-detection over the allow-list only.
