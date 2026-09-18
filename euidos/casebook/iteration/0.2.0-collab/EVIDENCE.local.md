@@ -127,3 +127,11 @@ clean. **euidos-internal still serves the phase-1 build (`cff7269f`) — nothing
   side effect, not per-command.
 - Host state at the time of this memo: `euidos-internal` serves `cff7269f` (phase 1 only); `board.euidos.ai`
   still 302s to Access; wall kiosk `100.102.3.47` never contacted by any phase-2 agent.
+
+### Phase 2 shipped — 2026-09-18 (main loop)
+
+| Item | Status | Note |
+| --- | --- | --- |
+| Deploy of master 3bf71edd | **met** | `deploy-whiteboard.sh master` run by the main loop (agents are refused by the deploy gate): storage image 3bf71edd, all host smoke lines ok, tunnel container untouched. |
+| Live voice on the hosted HTTPS origin (acceptance step 5) | **met** | `euidos/e2e/voice/live-smoke.mjs` PASS 26.4 s: getUserMedia granted, words landed 3040 ms after arming, multipart upload through same-origin `/stt/` (0 direct requests), scaffolding swept on the collab load path, no page errors. |
+| Collab smoke on the phase-2 build | **met** | `collab-smoke.mjs` PASS 25.2 s, relay 10 ms; `board.euidos.ai` still 302 → Access. |
