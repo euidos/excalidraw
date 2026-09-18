@@ -3,6 +3,7 @@
  * library and images carry over to this wrapper unchanged (DESIGN gate G6).
  */
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
+import { isRegionMarker } from "./contracts";
 import type {
   AppState,
   BinaryFileData,
@@ -60,12 +61,31 @@ const isGhostText = (text: string): boolean => {
   return PLACEHOLDER_FRAMES.has(t) || t.startsWith(FAILED_PREFIX);
 };
 
+const textContentOf = (el: ExcalidrawElement): string | null => {
+  const text = el as unknown as { text?: unknown };
+  return typeof text.text === "string" ? text.text : null;
+};
+
+const containerIdOf = (el: ExcalidrawElement): string | null => {
+  const text = el as unknown as { containerId?: unknown };
+  return typeof text.containerId === "string" ? text.containerId : null;
+};
+
 /**
- * A reload during a pending transcription leaves the placeholder text ("\u00b7") and its dashed container behind:
- * the controller that owned them is gone, so nothing will ever commit or discard them. Sweep them back to plain
- * shapes at load. Pure so it can be unit-tested without the library's restore pipeline.
+ * A reload during a pending transcription leaves two kinds of litter behind, because the controller that owned
+ * them is gone and nothing will ever commit or discard them:
  *
- * Returns a NEW array; only the touched elements are replaced (shallow copies), the rest are passed through.
+ *   - ghost TEXTS: a placeholder frame ("\u00b7") or a "\u26a0 STT" warning;
+ *   - leftover region MARKERS (`customData.voiceRegion`, round 4a). A committed take deletes its own marker, so a
+ *     marker that reached storage is by definition a take that never finished — pending, failed, or whose text the
+ *     founder deleted by hand. Markers are scaffolding and are deleted outright; a marker is only kept if a real
+ *     (non-ghost) text is bound to it, which the app never produces but a hand-edited scene could.
+ *
+ * A container that is NOT a marker is a shape the founder drew before round 4a, or by hand: that one is kept, and
+ * only the ghost is unbound from it and its dashed "pending" stroke restored. Nothing else is touched.
+ *
+ * Pure so it can be unit-tested without the library's restore pipeline. Returns a NEW array; only the touched
+ * elements are replaced (shallow copies), the rest are passed through.
  */
 export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: readonly T[]): T[] {
   const byId = new Map<string, T>();
@@ -73,30 +93,38 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: re
     byId.set(el.id, el);
   }
 
-  /** containerId -> ids of ghost texts to unbind from it */
+  /** containerId -> ids of ghost texts to unbind from it (markers are deleted instead, never unbound) */
   const unbind = new Map<string, Set<string>>();
   const deleted = new Set<string>();
+  /** Markers with a real text bound to them: the one case a marker survives the sweep. */
+  const claimedMarkers = new Set<string>();
 
   for (const el of elements) {
     if (el.isDeleted || el.type !== "text") {
       continue;
     }
-    const text = el as unknown as { text?: unknown; containerId?: unknown };
-    if (typeof text.text !== "string" || !isGhostText(text.text)) {
+    const content = textContentOf(el);
+    if (content === null) {
       continue;
     }
-    const containerId = typeof text.containerId === "string" ? text.containerId : null;
+    const containerId = containerIdOf(el);
+    if (!isGhostText(content)) {
+      if (containerId && content.trim()) {
+        claimedMarkers.add(containerId);
+      }
+      continue;
+    }
     if (!containerId) {
-      // Free-standing placeholder: an orphan the controller never got to replace.
-      if (PLACEHOLDER_FRAMES.has(text.text.trim())) {
+      // Free-standing placeholder: an orphan, or the text of a line region, that the controller never replaced.
+      if (PLACEHOLDER_FRAMES.has(content.trim())) {
         deleted.add(el.id);
       }
       continue;
     }
     deleted.add(el.id);
     const container = byId.get(containerId);
-    if (!container || container.isDeleted) {
-      continue; // container is gone; nothing to restore
+    if (!container || container.isDeleted || isRegionMarker(container)) {
+      continue; // the container is gone, or it is a marker — which the marker pass below deletes wholesale
     }
     let set = unbind.get(containerId);
     if (!set) {
@@ -104,6 +132,12 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: re
       unbind.set(containerId, set);
     }
     set.add(el.id);
+  }
+
+  for (const el of elements) {
+    if (!el.isDeleted && isRegionMarker(el) && !claimedMarkers.has(el.id)) {
+      deleted.add(el.id);
+    }
   }
 
   if (!deleted.size && !unbind.size) {

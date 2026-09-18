@@ -1,12 +1,18 @@
 /**
  * fit.ts — builds the Excalidraw elements a voice segment needs, and fits transcripts into them.
  *
+ * A drawn shape SELECTS A REGION; it is not a drawing (round 4a). So what a stroke produces is a dashed region
+ * MARKER plus the text that will replace it, and a commit deletes the marker: the founder is left with the words
+ * alone, fitted to the bounding box they drew around them.
+ *
  * Every measurement is delegated to the library: `convertToExcalidrawElements` runs the same
  * `bindTextToContainer` → `redrawTextBoundingBox` path the editor itself uses, so a throwaway "probe" element
  * tells us exactly what the editor would do with a given font size — including growing a container the text does
  * not fit in, and wrapping a label to the container's width. Fitting an area is a binary search for the largest
- * size that leaves the container alone; fitting a line is the largest size that still fits on one line, and below
- * that floor a block wrapped to the line's own length (R5).
+ * size that leaves the probe container alone; the committed text then takes that probe's own layout and drops the
+ * binding (containerId null, autoResize false at the measured width), so the lines stay exactly where they were
+ * measured even though the container they were measured in is gone. Fitting a line is the largest size that still
+ * fits on one line, and below that floor a block wrapped to the line's own length (R5).
  *
  * That measurement only throws where a document's font metrics are missing — outside a browser, which this module
  * is not contracted to run in. So there is no second, always-wrong measurement path here: every entry point runs
@@ -27,6 +33,7 @@ import type {
   FontFamilyValues,
   StrokeStyle,
 } from "@excalidraw/excalidraw/element/types";
+import { VOICE_REGION_CUSTOM_DATA } from "./contracts";
 import type {
   FitModule,
   FitOptions,
@@ -48,6 +55,9 @@ const PLACEHOLDER_HEIGHT_RATIO = 0.35;
 const PLACEHOLDER_MIN_FONT_SIZE = 12;
 const LINE_PLACEHOLDER_FONT_SIZE = 24;
 const FAILED_TEXT = "⚠ STT";
+/** A marker is scaffolding, so it is drawn thin and faint: it must never read as the founder's own ink. */
+const MARKER_OPACITY = 60;
+const MARKER_STROKE_WIDTH = 1;
 const FAILED_FONT_SIZE = 14;
 const FAILED_COLOR = "#c92a2a";
 /** Guard rails so a corrupt settings value can never produce a NaN-sized element. */
@@ -164,6 +174,35 @@ function shapeProps(src: StyleSnapshot | ExcalidrawElement, type: string, stroke
   };
 }
 
+/**
+ * The look of a region MARKER: the founder's own stroke colour, so it reads as theirs, but thin, faint, dashed and
+ * never filled — scaffolding, not ink. Roundness is null so the marker's box is exactly the region's box.
+ */
+function markerProps(strokeColor: string, roughness: number): ShapeProps {
+  return {
+    strokeColor,
+    backgroundColor: "transparent",
+    fillStyle: "solid",
+    strokeWidth: MARKER_STROKE_WIDTH,
+    strokeStyle: "dashed",
+    roughness: num(roughness, 1),
+    opacity: MARKER_OPACITY,
+    roundness: null,
+  };
+}
+
+/**
+ * Stamps an element as a region marker. The mark lives in `customData` because that is what survives storage: a
+ * marker found in a reloaded scene is always a leftover (a committed take deletes its own marker), which is how
+ * persist.ts can sweep one without knowing anything about the take that made it.
+ */
+const stamp = (el: ExcalidrawElement): ExcalidrawElement =>
+  newElementWith(el, { customData: { ...el.customData, ...VOICE_REGION_CUSTOM_DATA } });
+
+/** Once the text is placed the marker leaves the scene in the SAME update; an absent marker is normal, not an error. */
+const removeMarker = (marker: ExcalidrawElement | null | undefined): ExcalidrawElement[] =>
+  marker && !marker.isDeleted ? [newElementWith(marker, { isDeleted: true })] : [];
+
 function geometryOf(el: ExcalidrawElement): Geometry {
   return {
     x: num(el.x),
@@ -193,35 +232,10 @@ function geometryOfShape(shape: StrokeShape): Geometry {
   };
 }
 
-/**
- * The geometry the user's own stroke had, before any growth our placeholder caused. Lines keep their points, so
- * only areas have anything to restore; without a usable shape the container is left exactly as it is.
- */
-function originalGeometry(
-  target: VoiceTarget | undefined,
-  container: ExcalidrawElement,
-): { x?: number; y?: number; width?: number; height?: number } {
-  const shape = target?.shape;
-  if (!shape || shape.kind === "line" || isLinearElement(container)) {
-    return {};
-  }
-  const { x, y, width, height } = geometryOfShape(shape);
-  return { x, y, width, height };
-}
-
-/** Undo the container growth a placeholder caused: a shape the founder drew is the size they drew it. */
-function restoreShape(container: ExcalidrawElement, target: VoiceTarget): ExcalidrawElement {
-  return newElementWith(container, originalGeometry(target, container));
-}
-
 function withTextBinding(bound: readonly BoundElement[] | null, textId: string): BoundElement[] {
   // A container may hold only one bound text; a stale one would render on top of ours.
   const kept = (bound ?? []).filter((entry) => entry && entry.type !== "text");
   return [...kept, { id: textId, type: "text" }];
-}
-
-function withoutTextBinding(bound: readonly BoundElement[] | null, textId: string): BoundElement[] {
-  return (bound ?? []).filter((entry) => entry && entry.id !== textId);
 }
 
 /** One text element through the library — the only text factory and the only text measurement in this module. */
@@ -479,6 +493,37 @@ function applyBoundLayout(
   });
 }
 
+/**
+ * The committed form of a fitted area text: the probed BOUND layout, with the binding cut. Same x/y/size/wrapped
+ * lines, `containerId` null and `autoResize` false at the measured width — the library only re-wraps a free text
+ * element when autoResize is true, so the block stays where it was measured across a render, a reload and an undo.
+ */
+function applyFreeLayout(
+  text: ExcalidrawTextElement,
+  probed: ExcalidrawTextElement,
+  originalText: string,
+): ExcalidrawTextElement {
+  return newElementWith(text, {
+    text: probed.text,
+    originalText,
+    fontSize: probed.fontSize,
+    fontFamily: probed.fontFamily,
+    lineHeight: probed.lineHeight,
+    width: probed.width,
+    height: probed.height,
+    x: probed.x,
+    y: probed.y,
+    angle: probed.angle,
+    strokeColor: probed.strokeColor,
+    opacity: probed.opacity,
+    textAlign: "center",
+    verticalAlign: probed.verticalAlign,
+    autoResize: false,
+    containerId: null,
+    isDeleted: false,
+  });
+}
+
 /** Placeholder dot size: a comfortable fraction of the shape, never below 12px nor above the user's ceiling. */
 function placeholderFontSize(geom: Geometry, maxFontSize: number): number {
   return clamp(
@@ -496,7 +541,7 @@ function linePlaceholder(
   const g = lineGeometry(lineEl, shape);
   const layout = layoutLineText(g, PLACEHOLDER_FRAMES[0], label.fontFamily, fontSize, fontSize);
   const textEl = applyLineLayout(null, layout, label);
-  return { elements: [lineEl, textEl], target: { containerId: lineEl.id, textId: textEl.id, shape } };
+  return { elements: [lineEl, textEl], target: { markerId: lineEl.id, textId: textEl.id, shape } };
 }
 
 function newLineElement(shape: StrokeShape, props: ShapeProps): ExcalidrawElement {
@@ -543,30 +588,33 @@ function labelOf(src: StyleSnapshot | ExcalidrawElement, fontFamily: FontFamilyV
 }
 
 function buildPlaceholder(shape: StrokeShape, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult {
-  return guarded("buildPlaceholder", { elements: [], target: { containerId: "", textId: "", shape } }, () => {
+  return guarded("buildPlaceholder", { elements: [], target: { markerId: "", textId: "", shape } }, () => {
     const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
     const label = labelOf(style, style.fontFamily);
     if (shape?.kind === "line") {
-      const lineEl = newLineElement(shape, shapeProps(style, "line", "dashed"));
+      const lineEl = stamp(newLineElement(shape, shapeProps(style, "line", "dashed")));
       return linePlaceholder(lineEl, shape, label, minFontSize, lineMaxFontSize);
     }
-    const type: AreaType = shape?.kind === "ellipse" ? "ellipse" : "rectangle";
     const geom = geometryOfShape(shape);
-    const probe: Probe = { type, geom, props: shapeProps(style, type, "dashed"), label };
+    // A RECTANGLE even for an ellipse stroke: the region is the stroke's bounding box, that is where the text is
+    // fitted, and the outline itself is gone the moment the words land — so there is no ellipse to be faithful to.
+    const probe: Probe = { type: "rectangle", geom, props: markerProps(style.strokeColor, style.roughness), label };
     // Search down from the wanted size so a shallow box gets a smaller dot rather than being grown.
     const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
     const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
     return {
-      elements: [pair.container, pair.text],
-      target: { containerId: pair.container.id, textId: pair.text.id, shape },
+      elements: [stamp(pair.container), pair.text],
+      target: { markerId: pair.container.id, textId: pair.text.id, shape },
     };
   });
 }
 
 function buildPlaceholderFor(container: ExcalidrawElement, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult {
   const shape = shapeOfElement(container);
-  const dashed = newElementWith(container, { strokeStyle: "dashed" as StrokeStyle });
-  const fallback = { elements: [dashed], target: { containerId: container.id, textId: "", shape } };
+  // The element the founder just drew with a native tool IS the marker: dashed and stamped, it disappears with
+  // the commit like any other region marker.
+  const dashed = stamp(newElementWith(container, { strokeStyle: "dashed" as StrokeStyle }));
+  const fallback = { elements: [dashed], target: { markerId: container.id, textId: "", shape } };
   return guarded("buildPlaceholderFor", fallback, () => {
     const { maxFontSize, minFontSize, lineMaxFontSize } = resolveOptions(opts);
     const label = labelOf(container, style.fontFamily);
@@ -579,13 +627,15 @@ function buildPlaceholderFor(container: ExcalidrawElement, style: StyleSnapshot,
     const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
     const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
     const text = newElementWith(pair.text, { containerId: container.id });
-    const updated = newElementWith(container, {
-      strokeStyle: "dashed" as StrokeStyle,
-      width: pair.container.width,
-      height: pair.container.height,
-      boundElements: withTextBinding(container.boundElements, text.id),
-    });
-    return { elements: [updated, text], target: { containerId: container.id, textId: text.id, shape } };
+    const updated = stamp(
+      newElementWith(container, {
+        strokeStyle: "dashed" as StrokeStyle,
+        width: pair.container.width,
+        height: pair.container.height,
+        boundElements: withTextBinding(container.boundElements, text.id),
+      }),
+    );
+    return { elements: [updated, text], target: { markerId: container.id, textId: text.id, shape } };
   });
 }
 
@@ -607,83 +657,85 @@ function setPlaceholderFrame(text: ExcalidrawTextElement, frame: number): Excali
   });
 }
 
+/**
+ * The transcript, fitted to the REGION and committed as a free text element, with the marker deleted in the same
+ * breath. The geometry comes from `target.shape` and never from the marker: a second utterance (or a retry after a
+ * ⚠) lands in a region whose marker was already removed by the first commit, and the founder's words must still go
+ * where they drew them.
+ */
 function commitText(
   target: VoiceTarget,
-  container: ExcalidrawElement,
   text: ExcalidrawTextElement,
   transcript: string,
   style: StyleSnapshot,
+  marker?: ExcalidrawElement | null,
   opts?: FitOptions,
 ): ExcalidrawElement[] {
-  return guarded("commitText", [container, text], () => {
+  const live = marker && !marker.isDeleted ? marker : null;
+  return guarded("commitText", live ? [live, text] : [text], () => {
     const { maxFontSize, minFontSize, lineMaxFontSize, lineMinFontSize } = resolveOptions(opts);
     const content = String(transcript ?? "").trim();
     if (!content) {
       // The controller is meant to call discard() for this; doing it here keeps an empty result harmless.
-      return discard(target, container, text, style);
+      return discard(target, live, text, style);
     }
-    const label = labelOf(container, style.fontFamily);
-    if (isLinearElement(container)) {
-      const g = lineGeometry(container, target?.shape ?? shapeOfElement(container));
+    const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
+    const label = labelOf(style, style.fontFamily);
+    if (shape?.kind === "line" || isLinearElement(live)) {
+      const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, content, style.fontFamily, lineMinFontSize, lineMaxFontSize);
-      return [
-        newElementWith(container, { strokeStyle: style.strokeStyle }),
-        applyLineLayout(text, layout, label),
-      ];
+      return [applyLineLayout(text, layout, label), ...removeMarker(live)];
     }
-    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
-    const geom = geometryOf(container);
-    const probe: Probe = { type, geom, props: shapeProps(container, type, style.strokeStyle), label };
+    const geom = shape ? geometryOfShape(shape) : geometryOf(text);
+    // Measured in a throwaway rectangle the size of the region: the largest font size the library's own layout
+    // fits inside it without growing it. The probe is discarded; only its layout survives, on a free text element.
+    const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const pair = fitBoundText(probe, content, minFontSize, maxFontSize);
-    const restored = newElementWith(container, {
-      strokeStyle: style.strokeStyle,
-      width: pair.container.width,
-      height: pair.container.height,
-      boundElements: withTextBinding(container.boundElements, target.textId || text.id),
-    });
-    return [restored, applyBoundLayout(text, pair.text, container.id, content)];
+    return [applyFreeLayout(text, pair.text, content), ...removeMarker(live)];
   });
 }
 
+/**
+ * The transcription failed: the warning goes in the region and the marker STAYS dashed, because the retry button
+ * needs something the founder can see and point at. A retry that succeeds runs commitText, which removes it.
+ */
 function markFailed(
-  target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot,
+  target: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement, style: StyleSnapshot,
 ): ExcalidrawElement[] {
-  return guarded("markFailed", [container, text], () => {
-    if (isLinearElement(container)) {
-      const g = lineGeometry(container, target?.shape);
+  const live = marker && !marker.isDeleted ? marker : null;
+  return guarded("markFailed", live ? [live, text] : [text], () => {
+    const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
+    const label = { ...labelOf(style, style.fontFamily), strokeColor: FAILED_COLOR };
+    if (shape?.kind === "line" || isLinearElement(live)) {
+      const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, FAILED_TEXT, style.fontFamily, FAILED_FONT_SIZE, FAILED_FONT_SIZE);
-      return [
-        newElementWith(container, { strokeStyle: style.strokeStyle }),
-        applyLineLayout(text, layout, { ...labelOf(container, style.fontFamily), strokeColor: FAILED_COLOR }),
-      ];
+      return [applyLineLayout(text, layout, label)];
     }
-    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
-    const original = originalGeometry(target, container);
-    // The marker is laid out in the shape the founder drew, not in whatever the placeholder grew it to.
-    const geom = { ...geometryOf(container), ...original };
-    const label = { ...labelOf(container, style.fontFamily), strokeColor: FAILED_COLOR };
-    const probe: Probe = { type, geom, props: shapeProps(container, type, style.strokeStyle), label };
+    const geom = shape ? geometryOfShape(shape) : geometryOf(text);
+    const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const pair = probeBoundPair(probe, FAILED_TEXT, FAILED_FONT_SIZE);
-    const restored = newElementWith(container, {
-      ...original,
-      strokeStyle: style.strokeStyle,
-      boundElements: withTextBinding(container.boundElements, target?.textId || text.id),
-    });
-    return [restored, applyBoundLayout(text, pair.text, container.id, FAILED_TEXT)];
+    if (!live) {
+      // A retry of a region whose marker the first commit already removed: the warning stands on its own.
+      return [applyFreeLayout(text, pair.text, FAILED_TEXT)];
+    }
+    return [
+      newElementWith(live, {
+        strokeStyle: "dashed" as StrokeStyle,
+        boundElements: withTextBinding(live.boundElements, target?.textId || text.id),
+      }),
+      applyBoundLayout(text, pair.text, live.id, FAILED_TEXT),
+    ];
   });
 }
 
+/**
+ * No speech ever landed in this region. The marker was only ever scaffolding, so BOTH halves leave the scene —
+ * round 4a: a shape the founder drew to select a region is not a shape they asked to keep.
+ */
 function discard(
-  target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot,
+  _target: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement, _style: StyleSnapshot,
 ): ExcalidrawElement[] {
-  return [
-    newElementWith(container, {
-      ...originalGeometry(target, container),
-      strokeStyle: style.strokeStyle,
-      boundElements: withoutTextBinding(container.boundElements, target?.textId || text.id),
-    }),
-    newElementWith(text, { isDeleted: true }),
-  ];
+  return [newElementWith(text, { isDeleted: true }), ...removeMarker(marker)];
 }
 
 function buildFreeText(at: Point, transcript: string, style: StyleSnapshot, fontSize: number): ExcalidrawTextElement {
@@ -698,10 +750,7 @@ function buildFreeText(at: Point, transcript: string, style: StyleSnapshot, font
   });
 }
 
-export const fit: FitModule & {
-  measureOnly: typeof measureOnly;
-  restoreShape: typeof restoreShape;
-} = {
+export const fit: FitModule & { measureOnly: typeof measureOnly } = {
   buildPlaceholder,
   buildPlaceholderFor,
   setPlaceholderFrame,
@@ -710,8 +759,7 @@ export const fit: FitModule & {
   discard,
   buildFreeText,
   measureOnly,
-  restoreShape,
 };
 
-export { measureOnly, restoreShape };
+export { measureOnly };
 export default fit;

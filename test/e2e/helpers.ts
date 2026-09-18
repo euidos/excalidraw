@@ -33,9 +33,13 @@ export interface SceneEl {
   strokeColor: string;
   isDeleted: boolean;
   text?: string;
+  originalText?: string;
   containerId?: string | null;
   fontSize?: number;
+  autoResize?: boolean;
   boundElements?: { id: string; type: string }[] | null;
+  /** Region markers carry `{ voiceRegion: true }` here; see contracts.ts VOICE_REGION_CUSTOM_DATA. */
+  customData?: Record<string, unknown> | null;
 }
 
 export interface Launched {
@@ -148,15 +152,24 @@ export async function elements(page: Page, includeDeleted = false): Promise<Scen
         strokeColor: el.strokeColor,
         isDeleted: el.isDeleted,
         text: typeof anyEl.text === "string" ? (anyEl.text as string) : undefined,
+        originalText: typeof anyEl.originalText === "string" ? (anyEl.originalText as string) : undefined,
         containerId: (anyEl.containerId as string | null | undefined) ?? null,
         fontSize: typeof anyEl.fontSize === "number" ? (anyEl.fontSize as number) : undefined,
+        autoResize: typeof anyEl.autoResize === "boolean" ? (anyEl.autoResize as boolean) : undefined,
         boundElements: (anyEl.boundElements as { id: string; type: string }[] | null) ?? null,
+        customData: (anyEl.customData as Record<string, unknown> | null | undefined) ?? null,
       };
     });
   }, includeDeleted);
 }
 
 export const texts = (els: SceneEl[]): SceneEl[] => els.filter((el) => el.type === "text");
+/**
+ * Live region markers: the dashed scaffolding a pending (or failed) take shows. A committed take deletes its own
+ * marker, so `markers(els)` is empty for every finished region — that is the round-4a assertion.
+ */
+export const markers = (els: SceneEl[]): SceneEl[] =>
+  els.filter((el) => !el.isDeleted && el.customData?.voiceRegion === true);
 export const shapes = (els: SceneEl[], type: string): SceneEl[] => els.filter((el) => el.type === type);
 /** Placeholder frames are the only single-character texts the app ever writes. */
 export const isPlaceholder = (el: SceneEl): boolean => /^·{1,3}$/.test((el.text ?? "").trim());

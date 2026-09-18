@@ -9,7 +9,12 @@ import { sweepGhostPlaceholders } from "../../src/persist";
 type Bound = { id: string; type: "text" };
 const shape = (
   id: string,
-  extra: { boundElements?: Bound[] | null; strokeStyle?: string; isDeleted?: boolean } = {},
+  extra: {
+    boundElements?: Bound[] | null;
+    strokeStyle?: string;
+    isDeleted?: boolean;
+    customData?: Record<string, unknown>;
+  } = {},
 ) =>
   ({
     id,
@@ -18,6 +23,17 @@ const shape = (
     strokeStyle: "solid",
     boundElements: null,
     ...extra,
+  }) as unknown as ExcalidrawElement;
+
+/** A region marker as fit.ts stamps it (round 4a): scaffolding that a finished take always deletes itself. */
+const marker = (id: string, extra: { boundElements?: Bound[] | null; type?: string } = {}) =>
+  ({
+    id,
+    type: extra.type ?? "rectangle",
+    isDeleted: false,
+    strokeStyle: "dashed",
+    boundElements: extra.boundElements ?? null,
+    customData: { voiceRegion: true },
   }) as unknown as ExcalidrawElement;
 
 const text = (
@@ -106,5 +122,62 @@ describe("sweepGhostPlaceholders", () => {
       text("t1", "·", { containerId: "c1", isDeleted: true }),
     ]);
     expect(byId(out, "c1").strokeStyle).toBe("dashed");
+  });
+
+  describe("region markers (round 4a)", () => {
+    it("deletes a marker and its placeholder: a reload cannot finish that take", () => {
+      const out = sweepGhostPlaceholders([
+        marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
+        text("t1", "··", { containerId: "m1" }),
+      ]);
+      expect(byId(out, "m1").isDeleted, "the marker was never the founder's drawing").toBe(true);
+      expect(byId(out, "t1").isDeleted).toBe(true);
+    });
+
+    it("deletes a marker whose text is gone altogether", () => {
+      const out = sweepGhostPlaceholders([marker("m1"), shape("keep")]);
+      expect(byId(out, "m1").isDeleted).toBe(true);
+      expect(byId(out, "keep").isDeleted, "nothing else is touched").toBe(false);
+      expect(byId(out, "keep").strokeStyle).toBe("solid");
+    });
+
+    it("deletes a marker left showing ⚠ STT: the audio for a retry died with the page", () => {
+      const out = sweepGhostPlaceholders([
+        marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
+        text("t1", "⚠ STT", { containerId: "m1" }),
+      ]);
+      expect(byId(out, "m1").isDeleted).toBe(true);
+      expect(byId(out, "t1").isDeleted).toBe(true);
+    });
+
+    it("deletes a LINE marker whose placeholder text was never bound to it", () => {
+      const out = sweepGhostPlaceholders([marker("m1", { type: "line" }), text("t1", "·")]);
+      expect(byId(out, "m1").isDeleted).toBe(true);
+      expect(byId(out, "t1").isDeleted).toBe(true);
+    });
+
+    it("leaves a committed free text alone — a finished take has no marker left to sweep", () => {
+      const input = [text("t1", "회의 목표", { containerId: null }), shape("c1")];
+      expect(sweepGhostPlaceholders(input)).toEqual(input);
+    });
+
+    it("keeps a marker that a real bound label claims (hand-edited scenes only)", () => {
+      const out = sweepGhostPlaceholders([
+        marker("m1", { boundElements: [{ id: "t1", type: "text" }] }),
+        text("t1", "a label somebody typed", { containerId: "m1" }),
+      ]);
+      expect(byId(out, "m1").isDeleted).toBe(false);
+      expect(byId(out, "t1").isDeleted).toBe(false);
+    });
+
+    it("unbinds rather than deletes a container that is NOT a marker", () => {
+      const out = sweepGhostPlaceholders([
+        shape("c1", { boundElements: [{ id: "t1", type: "text" }], strokeStyle: "dashed" }),
+        text("t1", "·", { containerId: "c1" }),
+      ]);
+      expect(byId(out, "c1").isDeleted, "a shape the founder drew by hand stays").toBe(false);
+      expect(byId(out, "c1").boundElements).toBe(null);
+      expect(byId(out, "c1").strokeStyle).toBe("solid");
+    });
   });
 });

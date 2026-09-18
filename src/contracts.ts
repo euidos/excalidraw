@@ -54,12 +54,28 @@ export interface FitOptions {
   /** Floor for text placed along a line; below this the text wraps to the line's length and grows upward. Default 14. */
   lineMinFontSize?: number;
 }
+/**
+ * The stamp every REGION MARKER carries. A marker is scaffolding — the dashed outline that says "the words go
+ * here" — and it is deleted the moment the text lands, so a marker found in a stored scene is always a leftover.
+ * `customData` survives localStorage, which is why the mark lives there and not in a module-level set of ids.
+ */
+export const VOICE_REGION_CUSTOM_DATA: { voiceRegion: true } = { voiceRegion: true };
+/** True for elements built as a region marker. Cheap enough to call per element in a sweep. */
+export const isRegionMarker = (
+  el: { customData?: Record<string, unknown> } | null | undefined,
+): boolean => el?.customData?.voiceRegion === true;
+
 /** Ids the controller needs to find its elements again later (never hold element objects across frames). */
 export interface VoiceTarget {
-  /** The container (rectangle/ellipse/diamond) or the line element. */
-  containerId: string;
-  /** The placeholder / final text element. */
+  /**
+   * The region marker: the dashed rectangle built for an area stroke, the dashed line for a line stroke, or the
+   * shape a native tool drew. It is deleted at commit, so looking this id up may legitimately find nothing —
+   * every caller must treat an absent marker as normal, not as an error.
+   */
+  markerId: string;
+  /** The placeholder / final text element. The one element of a target that outlives the take. */
   textId: string;
+  /** The region itself, in scene coordinates: the ONLY geometry a commit may fit into once the marker is gone. */
   shape: StrokeShape;
 }
 export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTarget };
@@ -67,24 +83,31 @@ export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTa
 /**
  * fit.ts — element construction and text fitting. Runs in the browser (uses the library's text measurement).
  *
- * buildPlaceholder: creates the container for `shape` in the user's style (strokeStyle forced to "dashed" while
- * pending) plus a bound placeholder text ("·"). For lines: a `line` element from start→end and a free text element
- * (not bound) positioned along the line. Text ids/element ids come from the library's own id generator.
+ * A drawn shape selects a REGION; it is not a drawing. So everything below builds a marker plus a text, and a
+ * committed take leaves the text alone on the canvas.
  *
- * buildPlaceholderFor: same, but for an EXISTING container/line the user drew with a native tool — returns only the
- * new text element plus the container updated with boundElements/dashed stroke.
+ * buildPlaceholder: for an area (rectangle OR ellipse recognition) a dashed RECTANGLE marker equal to the
+ * stroke's bounding box (roundness null, transparent background, strokeWidth 1, the user's strokeColor, reduced
+ * opacity) plus a bound placeholder text ("·") centred in it; for a line a dashed `line` element start→end plus a
+ * free text ("·") along it. Markers carry `customData` = VOICE_REGION_CUSTOM_DATA. Ids come from the library.
+ *
+ * buildPlaceholderFor: same, but for an EXISTING element a native tool drew — returns the new placeholder text
+ * plus that element turned into a marker (dashed, stamped, bound to the text).
  *
  * setPlaceholderFrame: returns the text element with its `text` replaced by the next animation frame ("·","··","···").
  *
- * commitText: final transcript. For containers: largest fontSize in [min, max] for which the library's bound-text
- * layout leaves container width/height unchanged (binary search using convertToExcalidrawElements /
- * redrawTextBoundingBox behaviour); returns [container (strokeStyle restored), text]. For lines: single-line text at
- * the largest fontSize ≤ lineMaxFontSize whose width ≤ line length (wrapping to width = length if even minFontSize
- * is too wide), centred on the line midpoint, rotated by the line angle (never upside down), sitting on the line's
- * upper side; returns [line (strokeStyle restored), text].
+ * commitText: final transcript, fitted to `target.shape` — never to a live marker, which may already be gone.
+ * For an area: the largest fontSize in [min, max] whose wrapped layout the library leaves the region's own size
+ * unchanged (binary search over convertToExcalidrawElements → redrawTextBoundingBox), committed as a FREE text
+ * element (containerId null, autoResize false at the fitted width, so the wrapped lines stay where they were
+ * measured). For a line: single-line text at the largest fontSize ≤ lineMaxFontSize whose width ≤ line length
+ * (wrapping to width = length if even lineMinFontSize is too wide), centred on the midpoint, rotated by the line
+ * angle (never upside down), on the line's upper side. Returns [text] — plus the marker marked deleted when one
+ * was passed in, in the SAME update, so nothing but the text is ever visible after a commit.
  *
- * markFailed: text becomes "⚠ STT" in red (#c92a2a) at a small size; container stroke restored.
- * discard: returns the container with the placeholder unbound + strokeStyle restored, and the text marked deleted.
+ * markFailed: text becomes "⚠ STT" in red (#c92a2a) at a small size, inside the region; the marker (if any) stays
+ * dashed so the retry has a visible target. A successful retry goes through commitText and the marker vanishes.
+ * discard: nothing landed here — both the text and the marker are marked deleted.
  */
 export interface FitModule {
   buildPlaceholder(shape: StrokeShape, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult;
@@ -92,15 +115,25 @@ export interface FitModule {
   setPlaceholderFrame(text: ExcalidrawTextElement, frame: number): ExcalidrawTextElement;
   commitText(
     target: VoiceTarget,
-    container: ExcalidrawElement,
     text: ExcalidrawTextElement,
     transcript: string,
     style: StyleSnapshot,
+    marker?: ExcalidrawElement | null,
     opts?: FitOptions,
   ): ExcalidrawElement[];
-  markFailed(target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot): ExcalidrawElement[];
-  discard(target: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, style: StyleSnapshot): ExcalidrawElement[];
-  /** Plain text at a point (no container): used when speech arrives without a stroke. */
+  markFailed(
+    target: VoiceTarget,
+    marker: ExcalidrawElement | null,
+    text: ExcalidrawTextElement,
+    style: StyleSnapshot,
+  ): ExcalidrawElement[];
+  discard(
+    target: VoiceTarget,
+    marker: ExcalidrawElement | null,
+    text: ExcalidrawTextElement,
+    style: StyleSnapshot,
+  ): ExcalidrawElement[];
+  /** Plain text at a point (no region): used when speech arrives without a stroke. */
   buildFreeText(at: Point, transcript: string, style: StyleSnapshot, fontSize: number): ExcalidrawTextElement;
 }
 
@@ -207,7 +240,7 @@ export interface VoiceController {
 }
 export type CreateVoiceController = (deps: VoiceControllerDeps) => VoiceController;
 
-/** Tools whose freshly drawn element is used as the container directly (modifier behaviour). */
+/** Tools whose freshly drawn element becomes the region marker directly (modifier behaviour). */
 export const NATIVE_CONTAINER_TOOLS = ["rectangle", "ellipse", "diamond", "line"] as const;
 
 /** toolbar.tsx — DOM injection next to the native shape buttons. */

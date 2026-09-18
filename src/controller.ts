@@ -270,25 +270,31 @@ export const createVoiceController: CreateVoiceController = ({
     api.updateScene({ elements: next, captureUpdate });
   };
 
-  /** Elements are never held across frames: look the pair up by id at the moment it is needed. */
-  const findPair = (
+  /**
+   * Elements are never held across frames: look the target up by id at the moment it is needed.
+   *
+   * The TEXT is the element a target lives or dies by. Its region marker is scaffolding that the first commit
+   * deletes, so `marker: null` is a normal state — a second utterance into the same region, or a retry after a ⚠
+   * that was already written over a committed text, both arrive with the marker long gone (round 4a).
+   */
+  const findTarget = (
     target: VoiceTarget,
-  ): { container: ExcalidrawElement; text: ExcalidrawTextElement } | null => {
+  ): { marker: ExcalidrawElement | null; text: ExcalidrawTextElement } | null => {
     const elements = api.getSceneElementsIncludingDeleted();
-    let container: ExcalidrawElement | undefined;
+    let marker: ExcalidrawElement | undefined;
     let text: ExcalidrawTextElement | undefined;
     for (const el of elements) {
-      if (el.id === target.containerId) {
-        container = el;
+      if (el.id === target.markerId && !el.isDeleted) {
+        marker = el;
       }
       if (el.id === target.textId && el.type === "text") {
         text = el;
       }
     }
-    if (!container || !text || container.isDeleted || text.isDeleted) {
+    if (!text || text.isDeleted) {
       return null;
     }
-    return { container, text };
+    return { marker: marker ?? null, text };
   };
 
   /**
@@ -432,7 +438,7 @@ export const createVoiceController: CreateVoiceController = ({
       .sort((a, b) => a.onsetMs - b.onsetMs || a.utteranceId - b.utteranceId)
       .map((part) => part.text)
       .join(" ");
-    const found = findPair(entry.target);
+    const found = findTarget(entry.target);
     if (!found) {
       // The user deleted the shape while we were transcribing: drop the result silently.
       forgetStroke(owner, entry.target.textId);
@@ -445,7 +451,7 @@ export const createVoiceController: CreateVoiceController = ({
       );
     } else {
       applyElements(
-        fit.commitText(entry.target, found.container, found.text, combined, entry.style, fitOptions()),
+        fit.commitText(entry.target, found.text, combined, entry.style, found.marker, fitOptions()),
         CaptureUpdateAction.IMMEDIATELY,
       );
     }
@@ -472,7 +478,7 @@ export const createVoiceController: CreateVoiceController = ({
       }
       failed.delete(oldest.value);
     }
-    const found = findPair(entry.target);
+    const found = findTarget(entry.target);
     if (!found) {
       return;
     }
@@ -489,22 +495,23 @@ export const createVoiceController: CreateVoiceController = ({
       );
     } else {
       applyElements(
-        fit.markFailed(entry.target, found.container, found.text, entry.style),
+        fit.markFailed(entry.target, found.marker, found.text, entry.style),
         CaptureUpdateAction.IMMEDIATELY,
       );
     }
   };
 
-  /** No speech ever landed here: keep the shape the user drew, drop the placeholder. */
+  /** No speech ever landed here: the marker and the placeholder both go, so the canvas is as it was. */
   const discardTarget = (entry: TargetEntry): void => {
-    const found = findPair(entry.target);
+    const found = findTarget(entry.target);
     if (!found) {
       return;
     }
     if (!entry.orphan) {
-      // The shape stays, the placeholder goes, nothing is written: without this the founder cannot tell a silent
-      // room from a mic that heard nothing of what they said. An orphan is skipped — there is no "that shape",
-      // and its own drop has already been toasted with the text that was filtered.
+      // The region marker goes with the placeholder, so nothing at all is left where the founder drew: the toast
+      // is then the ONLY trace of the take, and without it a silent room and a mic that heard nothing of what they
+      // said look identical. An orphan is skipped — there is no "that shape", and its own drop was toasted with
+      // the text that was filtered.
       toast(NO_SPEECH_TOAST, DROP_TOAST_MS);
     }
     if (entry.orphan) {
@@ -512,7 +519,7 @@ export const createVoiceController: CreateVoiceController = ({
       return;
     }
     applyElements(
-      fit.discard(entry.target, found.container, found.text, entry.style),
+      fit.discard(entry.target, found.marker, found.text, entry.style),
       CaptureUpdateAction.IMMEDIATELY,
     );
   };
@@ -530,7 +537,7 @@ export const createVoiceController: CreateVoiceController = ({
    */
   const pruneFailed = (): void => {
     for (const entry of [...failed.values()]) {
-      if (!findPair(entry.entry.target)) {
+      if (!findTarget(entry.entry.target)) {
         failed.delete(entry.utteranceId);
         forgetStroke(entry.session, entry.entry.target.textId);
       }
@@ -664,7 +671,8 @@ export const createVoiceController: CreateVoiceController = ({
     applyElements([text], CaptureUpdateAction.IMMEDIATELY);
     const entry: TargetEntry = {
       target: {
-        containerId: text.id,
+        // An orphan has no region: the text is its own marker, and nothing is ever deleted in its place.
+        markerId: text.id,
         textId: text.id,
         shape: { kind: "rectangle", x: at.x, y: at.y, width: 0, height: 0 },
       },
@@ -693,7 +701,7 @@ export const createVoiceController: CreateVoiceController = ({
     let id = strokeId;
     while (id !== null) {
       const candidate = owner.targets.get(id);
-      if (candidate && findPair(candidate.target)) {
+      if (candidate && findTarget(candidate.target)) {
         u.assigned = id;
         return candidate;
       }
@@ -1185,7 +1193,7 @@ export const createVoiceController: CreateVoiceController = ({
             continue; // keep it failed and retryable by hand; three rounds is enough
           }
           failed.delete(entry.utteranceId);
-          const found = findPair(entry.entry.target);
+          const found = findTarget(entry.entry.target);
           if (!found) {
             continue; // its shape is gone; nothing to retry into
           }
@@ -1196,8 +1204,8 @@ export const createVoiceController: CreateVoiceController = ({
               strokeColor: entry.entry.style.strokeColor,
             }),
           ];
-          if (!entry.entry.orphan) {
-            restored.push(newElementWith(found.container, { strokeStyle: "dashed" }));
+          if (!entry.entry.orphan && found.marker) {
+            restored.push(newElementWith(found.marker, { strokeStyle: "dashed" }));
           }
           // Cosmetic re-arming the user did not cause.
           applyElements(restored, CaptureUpdateAction.NEVER);

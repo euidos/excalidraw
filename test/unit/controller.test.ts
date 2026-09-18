@@ -46,7 +46,12 @@ if (typeof globalThis.requestAnimationFrame !== "function") {
   }) as typeof globalThis.cancelAnimationFrame;
 }
 
-type El = ExcalidrawElement & { text?: string; containerId?: string | null; points?: number[][] };
+type El = ExcalidrawElement & {
+  text?: string;
+  containerId?: string | null;
+  points?: number[][];
+  customData?: Record<string, unknown>;
+};
 
 const el = (fields: Partial<El> & { id: string; type: string }): El =>
   ({
@@ -120,17 +125,26 @@ class FakeApi {
   }
 }
 
-/** Ids are handed out in creation order so a test can name the container it expects the words in. */
+/** Ids are handed out in creation order so a test can name the region the words are expected in. */
 let seq = 0;
+/**
+ * A fit module that only obeys the round-4a contract: a region MARKER plus a placeholder while pending, and a
+ * commit that frees the text and deletes the marker in the same update.
+ */
 const fakeFit = (): FitModule => {
-  const placeholder = (shape: StrokeShape, containerId?: string): PlaceholderResult => {
+  const placeholder = (shape: StrokeShape, markerId?: string): PlaceholderResult => {
     seq += 1;
-    const cid = containerId ?? `container-${seq}`;
+    const mid = markerId ?? `marker-${seq}`;
     const tid = `text-${seq}`;
-    const container = el({ id: cid, type: "rectangle", strokeStyle: "dashed" });
-    const text = el({ id: tid, type: "text", text: "·", containerId: cid });
-    const target: VoiceTarget = { containerId: cid, textId: tid, shape };
-    return { elements: [container, text], target };
+    const marker = el({
+      id: mid,
+      type: "rectangle",
+      strokeStyle: "dashed",
+      customData: { voiceRegion: true },
+    });
+    const text = el({ id: tid, type: "text", text: "·", containerId: mid });
+    const target: VoiceTarget = { markerId: mid, textId: tid, shape };
+    return { elements: [marker, text], target };
   };
   return {
     buildPlaceholder: (shape: StrokeShape) => placeholder(shape),
@@ -138,17 +152,23 @@ const fakeFit = (): FitModule => {
       placeholder({ kind: "rectangle", x: 0, y: 0, width: 100, height: 60 }, container.id),
     setPlaceholderFrame: (text: ExcalidrawTextElement, frame: number) =>
       ({ ...text, text: ".".repeat((frame % 3) + 1) }) as ExcalidrawTextElement,
-    commitText: (_t: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement, transcript: string) => [
-      { ...container, strokeStyle: "solid" } as ExcalidrawElement,
-      { ...text, text: transcript, originalText: transcript } as ExcalidrawTextElement,
+    commitText: (
+      _t: VoiceTarget,
+      text: ExcalidrawTextElement,
+      transcript: string,
+      _style: StyleSnapshot,
+      marker?: ExcalidrawElement | null,
+    ) => [
+      { ...text, text: transcript, originalText: transcript, containerId: null } as ExcalidrawTextElement,
+      ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
     ],
-    markFailed: (_t: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement) => [
-      container,
+    markFailed: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => [
+      ...(marker ? [marker] : []),
       { ...text, text: "⚠ STT" } as ExcalidrawTextElement,
     ],
-    discard: (_t: VoiceTarget, container: ExcalidrawElement, text: ExcalidrawTextElement) => [
-      { ...container, strokeStyle: "solid" } as ExcalidrawElement,
+    discard: (_t: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement) => [
       { ...text, isDeleted: true } as ExcalidrawTextElement,
+      ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
     ],
     buildFreeText: (at: Point, transcript: string) => {
       seq += 1;
@@ -318,7 +338,10 @@ describe("the controller keeps a target whose speech is still open", () => {
 
     h.capture.clock = 1000;
     await h.stroke("ink-a");
-    const containerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    // The words belong to the region A selected, and the region's identity is its placeholder TEXT: the marker is
+    // deleted by the commit, so an id comparison against a live container would have nothing to compare to.
+    const textA = h.api.elements.find((e) => e.containerId === markerA)!.id;
 
     // A long sentence starts 100 ms after stroke A and is still running.
     h.capture.clock = 1100;
@@ -342,7 +365,9 @@ describe("the controller keeps a target whose speech is still open", () => {
     await until(() => h.status().completed === 1, 3000);
     const committed = h.api.elements.find((e) => e.text === SENTENCE);
     expect(committed, "the sentence was written somewhere").toBeTruthy();
-    expect(committed!.containerId, "…and into the shape drawn for it, not a free-text orphan").toBe(containerA);
+    expect(committed!.id, "…in the region drawn for it, not as a free-text orphan").toBe(textA);
+    expect(committed!.containerId ?? null, "and it is free text: the marker it was fitted in is gone").toBeNull();
+    expect(h.api.find(markerA)!.isDeleted, "the region marker left with the commit").toBe(true);
     expect(h.status().orphans).toBe(0);
   });
 });

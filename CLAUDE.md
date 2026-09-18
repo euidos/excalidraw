@@ -9,11 +9,13 @@ also the build box. Run `npm install` once before `npm test` / `npm run build` /
 
 ## The model, in one paragraph
 
-Arming opens a session. Strokes produce **targets** (a container plus a bound placeholder text); the microphone
+Arming opens a session. Strokes produce **targets** (a region marker plus a placeholder text); the microphone
 runs continuously and the VAD produces **utterances** (one speech burst bounded by silence); `assign.ts` maps
 utterances onto strokes — the latest stroke whose pointer-down is ≤ onset + pre-roll (1.5 s) wins, so a label
-spoken just before its box still lands in that box. An assignment may only be acted on once it is `final` (the
-pre-roll window has elapsed), several utterances may share one target (appended in onset order, refitted), and an
+spoken just before its box still lands in that box. A drawn shape is a REGION, not a drawing: the marker is dashed
+scaffolding that the commit deletes, leaving the transcript alone on the canvas as a free text element fitted to
+the region's bounding box. An assignment may only be acted on once it is `final` (the pre-roll window has
+elapsed), several utterances may share one target (appended in onset order, refitted), and an
 utterance no stroke can claim becomes free text at the last pointer position. Audio is cut by silence, never by
 pointer events, so palm contacts and pans cut nothing. Never say "segment": the unit is an **utterance**.
 
@@ -24,21 +26,21 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 | `src/contracts.ts` | — | Types, defaults, JSDoc that defines behaviour. Do not edit to fit an implementation. |
 | `src/contracts-capture.ts` | — | `VoiceCapture`, `AssignUtterance`, the VAD options and the hallucination blocklist. Every declaration here has a live implementation. |
 | `src/stroke.ts` | `RecognizeStroke` | Pure geometry: points → line / rectangle / ellipse / null. No DOM, unit-tested. Thresholds are the `RecognizeOptions` JSDoc defaults in `contracts.ts` plus `MIN_CHORD_PATH_RATIO` here — the source of truth the README only copies. |
-| `src/fit.ts` | `FitModule` | Builds placeholders and fits transcripts by binary-searching the largest font size that leaves the container's size unchanged, measured through the library's own `convertToExcalidrawElements` → `redrawTextBoundingBox`. Line text wraps at the line-min floor instead of shrinking. |
+| `src/fit.ts` | `FitModule` | Builds region markers (dashed, stamped `customData.voiceRegion`, a rectangle on the stroke's bounding box for areas) with an animated placeholder, and fits transcripts by binary-searching the largest font size that leaves a throwaway probe container unchanged, measured through the library's own `convertToExcalidrawElements` → `redrawTextBoundingBox`. The commit copies that probe's layout onto a FREE text (containerId null, autoResize false at the fitted width) and marks the marker deleted in the same update. Line text wraps at the line-min floor instead of shrinking. |
 | `src/capture.ts` | `CreateVoiceCapture` | One long-lived `getUserMedia` stream → AudioWorklet (Blob-URL module) → Float32 ring buffer at 16 kHz; `wav(fromMs,toMs)` cuts a 16-bit mono WAV; mic transitions are pushed through `onMicChange`; `onLevel` and `noiseFloor` are RAW RMS (no display gain — that belongs to `level.ts`). |
 | `src/level.ts` | — | The ONE display mapping for loudness: raw RMS → meter %, plus the effective VAD threshold (max(setting, 3× floor)). Imported by the panel and the toolbar so a bar and a marker can never end up on two axes. |
 | `src/vad.ts` | `Vad` (internal to capture) | Energy VAD as a pure state machine over 20 ms RMS frames; boundaries reported as sample indices; tracks the room's noise floor (kept across `reset()`), effective threshold = max(setting, 3× floor). |
 | `src/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `src/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
 | `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. DOM-free. |
-| `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` cleans placeholders a reload stranded. |
+| `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter) and only unbinds ghosts from containers that are not markers. |
 | `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. |
 | `src/settings-panel.tsx` | — | React settings dialog: URL, language, prompt, mic, font caps, pre-roll, VAD threshold over a live level meter, warm-mic, STT test. |
 | `src/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. |
 | `src/App.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the top-right settings gear, `window.__excalidrawVoice`. |
 | `src/voice.css` | — | Styles for the injected buttons, the panel and the level meter, on Excalidraw's CSS variables. |
 | `scripts/` | — | `copy-fonts.mjs` (prebuild), `deploy.sh`, `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs` / `kiosk-clear.mjs` (README "Probing the live kiosk" says which answers what). |
-| `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, persist, stt, hallucination, level, toolbar. Playwright against the real STT server with Chromium's fake mic. |
+| `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
 
 ## Invariants
 
@@ -59,14 +61,22 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
   elements.
 - **Never hold element objects across frames.** Look them up by id (`getSceneElementsIncludingDeleted`) when you
   need them; a transcript can land after the user moved, edited or deleted the shape.
-- **The user's geometry is the user's.** Fitting shrinks text, it does not resize the drawn shape; the one
-  documented exception (a shape too small for the floor font size) is visible — the placeholder turns solid and
-  the growth happens where the founder can see it.
+- **The drawn shape is a region marker, not a drawing.** Every marker carries `customData.voiceRegion` (it
+  survives storage) and is deleted in the same `IMMEDIATELY` update that commits the text — including a shape the
+  founder drew with a native tool while armed. A take that heard nothing deletes the marker too; only a FAILED
+  take keeps it, dashed, so the retry button has a visible target.
+- **The region's geometry lives in the target, not in an element.** `VoiceTarget.shape` is what a commit fits
+  into, because by the second utterance (or a retry) the marker is already gone. `findTarget` treats a missing
+  marker as normal; only the text element must be alive.
+- **The user's geometry is the user's.** Fitting shrinks text to the region the founder drew; it never resizes
+  anything. Below the floor font size the text simply stays at the floor (a region too small for it is the
+  founder's choice, and the words stay legible).
 - **`captureUpdate` rules.** `CaptureUpdateAction.IMMEDIATELY` for anything the user should be able to undo
   (creating the placeholder, committing text, marking failed, discarding); `NEVER` for cosmetic churn the user
   did not cause — placeholder animation frames, retry re-arming, tool restoration.
 - **Fit probes carry fresh ids.** `redrawTextBoundingBox` caches grown heights by container id; probing with a
-  real container's id poisons that cache and the editor snaps the container later.
+  real container's id poisons that cache and the editor snaps the container later. Only the probe's LAYOUT is
+  kept: the committed text is unbound, so nothing on the canvas can be re-laid-out against a container again.
 - **A `custom` tool makes the canvas inert**, so stroke capture hijacks `freedraw`; when a native container tool
   (rectangle / ellipse / diamond / line) is already active, its element is used directly and the tool is left
   alone. Only restore a tool we switched ourselves.
@@ -86,7 +96,7 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 
 ```sh
 npm install   # once per checkout; Node 22
-npm test      # vitest: stroke, vad, assign, capture, controller, persist, stt, hallucination, level, toolbar
+npm test      # vitest: stroke, vad, assign, capture, controller, fit, persist, stt, hallucination, level, toolbar
 npm run build # tsc --noEmit -p tsconfig.json + vite build (prebuild copies fonts)
 npm run e2e   # Playwright; starts vite preview on 127.0.0.1:4173 itself; retries: 0
 ```

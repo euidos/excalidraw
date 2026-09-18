@@ -11,6 +11,12 @@
  * `warmMicOnBoot` is off for the whole suite (helpers.launchWithClip), so the fixture starts playing at the F9
  * press and t0 is a real reference point.
  *
+ * Round 4a makes the drawn shape a REGION MARKER instead of a drawing: while a take is pending the scene shows a
+ * dashed marker (helpers.markers) with the animated placeholder in it, and a commit deletes that marker and leaves
+ * the transcript behind as a FREE text element fitted to the region's bounding box. So the geometry assertions read
+ * "no marker is left, and exactly one free text sits inside the box the founder drew" — never "the shape kept its
+ * label".
+ *
  * One browser per test (the clip is a launch flag) and one screenshot per gate under test-results/evidence/.
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -27,6 +33,7 @@ import {
   isPlaceholder,
   launchWithClip,
   linePath,
+  markers,
   releaseHold,
   sceneBBox,
   seenUtterances,
@@ -58,15 +65,79 @@ const finalTexts = (els: SceneEl[]): SceneEl[] =>
 /** Committed text is WRAPPED text: "fellow\nAmericans" is the same sentence, so word assertions read it flat. */
 const flat = (text: string): string => text.replace(/\s+/g, " ").trim();
 const joined = (els: SceneEl[]): string => finalTexts(els).map((el) => flat(el.text ?? "")).join(" | ");
-const boundText = (els: SceneEl[], containerId: string): string =>
-  flat(finalTexts(els).find((el) => el.containerId === containerId)?.text ?? "");
+type Box = { x: number; y: number; width: number; height: number };
+
+/** Every pixel of `el` is inside `box` (±tol): what "the font fits inside the bounding box" means on screen. */
+const insideBox = (el: SceneEl, box: Box, tol = 2): boolean =>
+  el.x >= box.x - tol &&
+  el.y >= box.y - tol &&
+  el.x + el.width <= box.x + box.width + tol &&
+  el.y + el.height <= box.y + box.height + tol;
+
+/** The committed transcript of a region, identified by the box the founder drew rather than by a container id. */
+const textIn = (els: SceneEl[], box: Box, tol = 2): SceneEl | undefined =>
+  finalTexts(els).find((el) => insideBox(el, box, tol));
+const wordsIn = (els: SceneEl[], box: Box, tol = 2): string => flat(textIn(els, box, tol)?.text ?? "");
 
 const centerOf = (el: SceneEl): Pt => ({ x: el.x + el.width / 2, y: el.y + el.height / 2 });
-/** The timed cases run at zoom 1 with no scroll, so a screen centre and a scene centre are the same point. */
-const nearest = (els: SceneEl[], type: string, at: Pt): SceneEl | undefined =>
-  shapes(els, type)
+/**
+ * The committed text closest to a spot: with the marker gone, the text IS the region's identity. The timed cases
+ * run at zoom 1 with no scroll, so a screen centre and a scene centre are the same point.
+ */
+const nearestText = (els: SceneEl[], at: Pt): SceneEl | undefined =>
+  finalTexts(els)
     .slice()
     .sort((a, b) => Math.hypot(centerOf(a).x - at.x, centerOf(a).y - at.y) - Math.hypot(centerOf(b).x - at.x, centerOf(b).y - at.y))[0];
+const wordsNear = (els: SceneEl[], at: Pt): string => flat(nearestText(els, at)?.text ?? "");
+
+/**
+ * Re-runs the real fitter, in the page, over a region and a transcript — the only way to ask "was that the LARGEST
+ * font size that fits?" from outside: raise the ceiling to exactly one step above the size the app chose and the
+ * answer must not move, because if `fontSize + 1` fitted the binary search would have taken it.
+ */
+const refit = (
+  page: Page,
+  region: Box,
+  transcript: string,
+  maxFontSize?: number,
+): Promise<{ fontSize: number; containerId: string | null; autoResize: boolean }> =>
+  page.evaluate(
+    async (args: { region: Box; transcript: string; maxFontSize?: number }) => {
+      // Fitting is only comparable against the same loaded fonts; by this point the app has measured at least once,
+      // so awaiting here is what makes "the same region, one step more ceiling" an apples-to-apples question.
+      await document.fonts.ready;
+      const voice = window.__excalidrawVoice!;
+      const app = voice.api.getAppState();
+      const style = {
+        strokeColor: app.currentItemStrokeColor,
+        backgroundColor: app.currentItemBackgroundColor,
+        fillStyle: app.currentItemFillStyle,
+        strokeWidth: app.currentItemStrokeWidth,
+        strokeStyle: app.currentItemStrokeStyle,
+        roughness: app.currentItemRoughness,
+        opacity: app.currentItemOpacity,
+        roundness: app.currentItemRoundness,
+        fontFamily: app.currentItemFontFamily,
+      } as unknown as StyleSnapshot;
+      const built = voice.fit.buildPlaceholder({ kind: "rectangle", ...args.region }, style);
+      const [marker, placeholder] = built.elements;
+      const committed = voice.fit.commitText(
+        built.target,
+        placeholder as never,
+        args.transcript,
+        style,
+        marker,
+        args.maxFontSize === undefined ? undefined : { maxFontSize: args.maxFontSize },
+      );
+      const text = committed.find((el) => el.type === "text") as unknown as {
+        fontSize: number;
+        containerId: string | null;
+        autoResize: boolean;
+      };
+      return { fontSize: text.fontSize, containerId: text.containerId, autoResize: text.autoResize };
+    },
+    { region, transcript, maxFontSize },
+  );
 
 /** An oval stroke ~300x160 screen px, cheap enough to draw inside a two-second window. */
 const oval = (at: Pt, steps = 12): Pt[] => ellipsePath(at.x, at.y, 150, 80, steps);
@@ -98,11 +169,11 @@ const settled = async (page: Page, utterances: number, completed = utterances): 
  */
 async function assertThreeUtteranceWords(page: Page): Promise<SceneEl[]> {
   const els = await elements(page);
-  const ellipses = shapes(els, "ellipse");
-  expect(ellipses.length, "one shape per stroke").toBe(3);
-  const found = N6_SPOTS.map((spot) => nearest(els, "ellipse", spot)!);
-  expect(new Set(found.map((el) => el.id)).size, "each stroke found its own shape").toBe(3);
-  const spoken = found.map((el) => boundText(els, el.id));
+  expect(markers(els).length, "every region marker left with its transcript").toBe(0);
+  expect(finalTexts(els).length, "one text per stroke, nothing else").toBe(3);
+  const found = N6_SPOTS.map((spot) => nearestText(els, spot)!);
+  expect(new Set(found.map((el) => el.id)).size, "each stroke's words landed in its own region").toBe(3);
+  const spoken = found.map((el) => flat(el.text ?? ""));
 
   expect(spoken[0], `shape 1 (${spoken.join(" | ")})`).toMatch(/회의/);
   expect(spoken[1], `shape 2 (${spoken.join(" | ")})`).toMatch(/voice/i);
@@ -114,7 +185,7 @@ async function assertThreeUtteranceWords(page: Page): Promise<SceneEl[]> {
 }
 
 test.describe("voice areas", () => {
-  test("G1 vertical slice: one stroke + speech becomes a filled ellipse", async () => {
+  test("G1 vertical slice: one stroke + speech leaves the words alone in the region", async () => {
     const { browser, page } = await launchWithClip(fixture("jfk.wav"));
     try {
       const view = await transform(page);
@@ -124,8 +195,21 @@ test.describe("voice areas", () => {
       const t0 = await armHold(page);
       await drawStroke(page, path, { stepMs: 16 });
       await expect
-        .poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 15_000 })
+        .poll(async () => markers(await elements(page)).length, { timeout: 15_000 })
         .toBe(1);
+
+      // While the take is pending the region is a dashed rectangle on the stroke's own bounding box.
+      const pending = await elements(page);
+      const marker = markers(pending)[0]!;
+      expect(marker.type, "the marker is the region's box, not a drawing of the oval").toBe("rectangle");
+      expect(marker.strokeStyle).toBe("dashed");
+      expect(Math.abs(marker.width - expected.width)).toBeLessThanOrEqual(2);
+      expect(Math.abs(marker.height - expected.height)).toBeLessThanOrEqual(2);
+      expect(Math.abs(marker.x - expected.x)).toBeLessThanOrEqual(2);
+      expect(Math.abs(marker.y - expected.y)).toBeLessThanOrEqual(2);
+      expect(texts(pending).filter(isPlaceholder).length, "the placeholder animates inside it").toBe(1);
+      await evidence(page, "g1-region-pending");
+
       // The clip starts at the arm, so "And so, my fellow Americans," is the first utterance; 6 s covers it and
       // the VAD silence that closes it.
       await waitUntilWall(page, t0, 6_000);
@@ -136,14 +220,21 @@ test.describe("voice areas", () => {
         .toMatch(/fellow americans/i);
 
       const els = await elements(page);
-      const ellipse = shapes(els, "ellipse")[0]!;
+      expect(markers(els).length, "the marker was only ever a region selector").toBe(0);
+      expect(els.filter((el) => el.type !== "text").length, "nothing but text is left on the canvas").toBe(0);
+      expect(els.length, "exactly one element: the transcript").toBe(1);
+
       const text = finalTexts(els)[0]!;
-      expect(text.containerId).toBe(ellipse.id);
-      expect(ellipse.strokeStyle).toBe("solid");
-      expect(Math.abs(ellipse.width - expected.width)).toBeLessThanOrEqual(2);
-      expect(Math.abs(ellipse.height - expected.height)).toBeLessThanOrEqual(2);
-      expect(Math.abs(ellipse.x - expected.x)).toBeLessThanOrEqual(2);
-      expect(Math.abs(ellipse.y - expected.y)).toBeLessThanOrEqual(2);
+      expect(text.containerId, "free text: the box it was fitted in is gone").toBeNull();
+      expect(text.autoResize, "fixed at the fitted width, so the wrapped lines stay put").toBe(false);
+      expect(
+        insideBox(text, expected),
+        `text ${text.x},${text.y} ${text.width}x${text.height} inside ${JSON.stringify(expected)}`,
+      ).toBe(true);
+
+      // …and at the LARGEST size that fits: one step more ceiling changes nothing.
+      const oneStepUp = await refit(page, expected, text.originalText ?? text.text ?? "", (text.fontSize ?? 0) + 1);
+      expect(oneStepUp.fontSize, "the fitted size is maximal for this region").toBe(text.fontSize);
       await evidence(page, "g1-vertical-slice");
     } finally {
       await browser.close();
@@ -173,10 +264,14 @@ test.describe("voice areas", () => {
         await waitForUtterance(page, before + 1);
       }
 
-      // Still armed, still recording: the first two shapes already carry their transcripts while the third is
-      // being spoken — no stroke waited for a transcript.
+      // Still armed, still recording: the first two regions already carry their transcripts while the third is
+      // being spoken — no stroke waited for a transcript. A region is either a live marker or an written text by
+      // now, so the two counts together are what must account for all three strokes.
       const during = await elements(page);
-      expect(shapes(during, "ellipse").length, "three shapes coexist").toBe(3);
+      expect(
+        markers(during).length + finalTexts(during).length,
+        "three regions coexist, some already written",
+      ).toBeGreaterThanOrEqual(3);
       expect(
         finalTexts(during).length,
         "an earlier stroke committed while the hold continues",
@@ -191,11 +286,10 @@ test.describe("voice areas", () => {
       await expect.poll(async () => (await status(page)).pending, { timeout: 40_000 }).toBe(0);
 
       const els = await elements(page);
-      const ellipses = shapes(els, "ellipse");
-      expect(ellipses.length).toBe(3);
+      expect(markers(els).length, "no region marker survived its transcript").toBe(0);
+      expect(finalTexts(els).length).toBe(3);
       for (const spot of spots) {
-        const shape = nearest(els, "ellipse", spot)!;
-        expect(boundText(els, shape.id).trim().length, `shape at ${spot.x},${spot.y}`).toBeGreaterThan(0);
+        expect(wordsNear(els, spot).length, `region at ${spot.x},${spot.y}`).toBeGreaterThan(0);
       }
       expect((await status(page)).orphans).toBe(0);
       await evidence(page, "g2-parallelism");
@@ -264,7 +358,7 @@ test.describe("voice areas", () => {
     }
   });
 
-  test("G4a fit: long English and Korean transcripts never grow the container", async () => {
+  test("G4a fit: long English and Korean transcripts stay inside the region they were spoken into", async () => {
     const { browser, page } = await launchWithClip(ensureSilenceClip());
     try {
       const english =
@@ -274,7 +368,7 @@ test.describe("voice areas", () => {
       const korean = "이번 주 목표는 음성 인식으로 화이트보드 입력 속도를 세 배로 올리는 것입니다";
 
       const measured = await page.evaluate(
-        ({ en, ko }: { en: string; ko: string }) => {
+        async ({ en, ko }: { en: string; ko: string }) => {
           const voice = window.__excalidrawVoice!;
           const style = {
             strokeColor: "#1e1e1e",
@@ -287,31 +381,59 @@ test.describe("voice areas", () => {
             roundness: null,
             fontFamily: 5,
           } as unknown as StyleSnapshot;
-          // 120x80 is the hostile end of the declared shape envelope, not the 240x120 the round-1 gate used.
+          // Text metrics depend on the web font actually being loaded, and the first measurement is what triggers
+          // that load: measure once, wait for the fonts to settle, and only then fit — otherwise the first fit is
+          // made against a fallback font and every later one against Excalifont, which is a difference of two font
+          // sizes in a 240x120 box.
+          voice.fit.buildFreeText({ x: 0, y: 0 }, "font warm up", style, 20);
+          await document.fonts.ready;
+
+          // 120x80 is the hostile end of the declared region envelope, not the 240x120 the round-1 gate used.
           const run = (transcript: string, width: number, height: number) => {
-            const placeholder = voice.fit.buildPlaceholder(
-              { kind: "rectangle", x: 100, y: 100, width, height },
-              style,
-            );
-            const [container, text] = placeholder.elements;
+            const region = { kind: "rectangle" as const, x: 100, y: 100, width, height };
+            const placeholder = voice.fit.buildPlaceholder(region, style);
+            const [marker, text] = placeholder.elements;
             const committed = voice.fit.commitText(
               placeholder.target,
-              container!,
               text as never,
               transcript,
               style,
+              marker,
             );
-            const nextContainer = committed[0]!;
-            const nextText = committed[1] as unknown as {
+            const nextText = committed.find((el) => el.type === "text") as unknown as {
               fontSize: number;
               containerId: string | null;
+              autoResize: boolean;
               text: string;
+              x: number;
+              y: number;
+              width: number;
+              height: number;
             };
+            const goneMarker = committed.find((el) => el.id === marker!.id);
+            // The same fit with the ceiling exactly one step above the chosen size, measured in the same tick and
+            // against the same loaded fonts: if `fontSize + 1` fitted, the binary search would have taken it.
+            const ceilingProbe = voice.fit.buildPlaceholder(region, style);
+            const oneStepUp = voice.fit.commitText(
+              ceilingProbe.target,
+              ceilingProbe.elements[1] as never,
+              transcript,
+              style,
+              ceilingProbe.elements[0],
+              { maxFontSize: nextText.fontSize + 1 },
+            );
+            const capped = oneStepUp.find((el) => el.type === "text") as unknown as { fontSize: number };
             return {
-              width: nextContainer.width,
-              height: nextContainer.height,
+              maximalFontSize: capped.fontSize,
+              x: nextText.x,
+              y: nextText.y,
+              width: nextText.width,
+              height: nextText.height,
+              region,
+              transcript,
+              markerDeleted: !!goneMarker?.isDeleted,
               containerId: nextText.containerId,
-              expectedContainerId: nextContainer.id,
+              autoResize: nextText.autoResize,
               fontSize: nextText.fontSize,
               text: nextText.text,
             };
@@ -326,14 +448,19 @@ test.describe("voice areas", () => {
       );
 
       for (const [label, m] of Object.entries(measured)) {
-        const expectedWidth = label === "koSmall" ? 120 : 240;
-        const expectedHeight = label === "koSmall" ? 80 : 120;
-        expect(m.width, `${label} width`).toBeCloseTo(expectedWidth, 0);
-        expect(m.height, `${label} height`).toBeCloseTo(expectedHeight, 0);
+        const box = { x: m.region.x, y: m.region.y, width: m.region.width, height: m.region.height };
+        expect(m.x, `${label} left edge`).toBeGreaterThanOrEqual(box.x - 0.5);
+        expect(m.y, `${label} top edge`).toBeGreaterThanOrEqual(box.y - 0.5);
+        expect(m.x + m.width, `${label} right edge`).toBeLessThanOrEqual(box.x + box.width + 0.5);
+        expect(m.y + m.height, `${label} bottom edge`).toBeLessThanOrEqual(box.y + box.height + 0.5);
         expect(m.fontSize, `${label} fontSize`).toBeGreaterThanOrEqual(10);
         expect(m.fontSize, `${label} fontSize`).toBeLessThanOrEqual(96);
-        expect(m.containerId, `${label} binding`).toBe(m.expectedContainerId);
+        expect(m.containerId, `${label} is free text`).toBeNull();
+        expect(m.autoResize, `${label} keeps its fitted width`).toBe(false);
+        expect(m.markerDeleted, `${label} region marker is gone`).toBe(true);
         expect((m.text ?? "").length, `${label} text`).toBeGreaterThan(0);
+        // …and it is the LARGEST size this region takes: raising the ceiling by one step changes nothing.
+        expect(m.maximalFontSize, `${label} fitted size is maximal`).toBe(m.fontSize);
       }
       await evidence(page, "g4a-fit-direct");
     } finally {
@@ -341,14 +468,15 @@ test.describe("voice areas", () => {
     }
   });
 
-  test("G4b fit: a horizontal stroke becomes a line with text sitting on it", async () => {
+  test("G4b fit: a horizontal stroke leaves its text where the line was", async () => {
     const { browser, page } = await launchWithClip(EN_SHORT);
     try {
       const view = await transform(page);
       const path = linePath({ x: 450, y: 600 }, { x: 850, y: 600 }, 16);
       const t0 = await armHold(page);
       await drawStroke(page, path, { stepMs: 16 });
-      await expect.poll(async () => shapes(await elements(page), "line").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
+      expect(markers(await elements(page))[0]!.type, "a line region is marked by a dashed line").toBe("line");
       // en-short.wav is 2.4 s and plays once: 4.5 s covers the sentence and the silence that closes the utterance.
       await waitUntilWall(page, t0, 4_500);
       await releaseHold(page);
@@ -356,13 +484,17 @@ test.describe("voice areas", () => {
       await expect.poll(async () => joined(await elements(page)), { timeout: 30_000 }).toMatch(/voice/i);
 
       const els = await elements(page);
-      const line = shapes(els, "line")[0]!;
       const text = finalTexts(els)[0]!;
       const expected = sceneBBox(view, path);
+      expect(markers(els).length, "the line was a region marker, so it goes too").toBe(0);
+      expect(shapes(els, "line").length).toBe(0);
+      expect(els.length, "only the transcript is left").toBe(1);
       expect(text.containerId).toBeNull();
       expect(Math.abs(text.angle)).toBeLessThan(0.05);
       expect(text.width).toBeLessThanOrEqual(expected.width + 2);
-      expect(text.y + text.height).toBeLessThanOrEqual(line.y + 2);
+      expect(text.y + text.height, "still sitting where the line's upper side was").toBeLessThanOrEqual(
+        expected.y + 2,
+      );
       await evidence(page, "g4b-line-horizontal");
     } finally {
       await browser.close();
@@ -375,7 +507,7 @@ test.describe("voice areas", () => {
       const path = linePath({ x: 450, y: 620 }, { x: 750, y: 740 }, 16);
       const t0 = await armHold(page);
       await drawStroke(page, path, { stepMs: 16 });
-      await expect.poll(async () => shapes(await elements(page), "line").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
       await waitUntilWall(page, t0, 4_500);
       await releaseHold(page);
 
@@ -383,6 +515,7 @@ test.describe("voice areas", () => {
 
       const els = await elements(page);
       const text = finalTexts(els)[0]!;
+      expect(markers(els).length).toBe(0);
       expect(Math.abs(text.angle - Math.atan2(120, 300))).toBeLessThan(0.05);
       await evidence(page, "g4c-line-slanted");
     } finally {
@@ -395,10 +528,11 @@ test.describe("voice areas", () => {
     // this line. The hostile end of the line envelope — round 1 answered it by shrinking the text to 10 px.
     const { browser, page } = await launchWithClip(THREE);
     try {
+      const view = await transform(page);
       const path = linePath({ x: 600, y: 500 }, { x: 720, y: 500 }, 10);
       const t0 = await armHold(page);
       await drawStroke(page, path, { stepMs: 16 });
-      await expect.poll(async () => shapes(await elements(page), "line").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
       await waitUntilWall(page, t0, 15_000);
       await releaseHold(page);
       await settled(page, 3);
@@ -408,14 +542,15 @@ test.describe("voice areas", () => {
         .toMatch(/화이트보드|목표/);
 
       const els = await elements(page);
-      const line = shapes(els, "line")[0]!;
+      const expected = sceneBBox(view, path);
       const text = finalTexts(els)[0]!;
-      expect(finalTexts(els).length, "one text, on the line").toBe(1);
+      expect(finalTexts(els).length, "one text, where the line was").toBe(1);
+      expect(markers(els).length, "the line marker left with the transcript").toBe(0);
       expect(text.containerId, "line text is free, not bound").toBeNull();
       expect(text.fontSize ?? 0, "legible floor").toBeGreaterThanOrEqual(DEFAULT_SETTINGS.lineMinFontSize);
       expect(text.width, "wrapped to the line, not spilling past its ends").toBeLessThanOrEqual(122);
       expect(text.text ?? "", "wrapped onto several lines").toContain("\n");
-      expect(text.y + text.height, "sits above the line").toBeLessThanOrEqual(line.y + 2);
+      expect(text.y + text.height, "sits where the line's upper side was").toBeLessThanOrEqual(expected.y + 2);
       expect((await status(page)).orphans, "every sentence found the line").toBe(0);
       await evidence(page, "g4d-line-legibility");
     } finally {
@@ -427,8 +562,11 @@ test.describe("voice areas", () => {
     const { browser, page } = await launchWithClip(EN_SHORT);
     try {
       await setSettings(page, { sttUrl: "http://127.0.0.1:9" });
+      const view = await transform(page);
+      const path = oval({ x: 700, y: 420 }, 20);
+      const region = sceneBBox(view, path);
       const t0 = await armHold(page);
-      await drawStroke(page, oval({ x: 700, y: 420 }, 20), { stepMs: 16 });
+      await drawStroke(page, path, { stepMs: 16 });
       await waitUntilWall(page, t0, 4_500);
       await releaseHold(page);
 
@@ -439,11 +577,10 @@ test.describe("voice areas", () => {
         .toContain("⚠ STT");
       expect((await status(page)).failed).toBe(1);
       const failedEls = await elements(page);
-      const failedContainer = shapes(failedEls, "ellipse")[0]!;
-      expect(failedContainer, "the stroke must have become a container").toBeTruthy();
-      expect(texts(failedEls).find((el) => (el.text ?? "").includes("STT"))?.containerId).toBe(
-        failedContainer.id,
-      );
+      const failedMarker = markers(failedEls)[0]!;
+      expect(failedMarker, "a failed region KEEPS its marker: the retry needs a visible target").toBeTruthy();
+      expect(failedMarker.strokeStyle, "and it is still dashed").toBe("dashed");
+      expect(texts(failedEls).find((el) => (el.text ?? "").includes("STT"))?.containerId).toBe(failedMarker.id);
       await evidence(page, "g5a-failure");
 
       await setSettings(page, { sttUrl: STT_URL });
@@ -452,14 +589,18 @@ test.describe("voice areas", () => {
       await expect.poll(async () => joined(await elements(page)), { timeout: 30_000 }).toMatch(/voice/i);
       await expect.poll(async () => (await status(page)).failed, { timeout: 10_000 }).toBe(0);
       const retried = await elements(page);
-      expect(finalTexts(retried)[0]!.containerId).toBe(failedContainer.id);
+      expect(markers(retried).length, "a successful retry removes the marker like any commit").toBe(0);
+      expect(retried.length, "only the transcript is left").toBe(1);
+      const text = finalTexts(retried)[0]!;
+      expect(text.containerId).toBeNull();
+      expect(insideBox(text, region), `text ${JSON.stringify(text)} in ${JSON.stringify(region)}`).toBe(true);
       await evidence(page, "g5a-failure-retry");
     } finally {
       await browser.close();
     }
   });
 
-  test("G5b failure: silence leaves the shape and removes the placeholder", async () => {
+  test("G5b failure: silence leaves nothing behind and says so", async () => {
     const { browser, page } = await launchWithClip(`${ensureSilenceClip()}%noloop`);
     try {
       const t0 = await armHold(page);
@@ -490,10 +631,9 @@ test.describe("voice areas", () => {
         .toBe(true);
 
       const els = await elements(page);
-      const ellipse = shapes(els, "ellipse")[0]!;
-      expect(ellipse, "the shape the founder drew is kept").toBeTruthy();
-      expect(ellipse.strokeStyle).toBe("solid");
+      expect(markers(els).length, "the region marker goes with the placeholder").toBe(0);
       expect(texts(els).length).toBe(0);
+      expect(els.length, "a take that heard nothing leaves the canvas exactly as it was").toBe(0);
       expect((await status(page)).failed).toBe(0);
       await evidence(page, "g5b-silence");
     } finally {
@@ -514,7 +654,7 @@ test.describe("voice areas", () => {
       });
 
       const doomed = await elements(page);
-      const ids = [shapes(doomed, "ellipse")[0]!.id, texts(doomed)[0]!.id];
+      const ids = [markers(doomed)[0]!.id, texts(doomed)[0]!.id];
       await page.evaluate((deleted: string[]) => {
         const api = window.__excalidrawVoice!.api;
         const next = api
@@ -533,7 +673,8 @@ test.describe("voice areas", () => {
       expect(final.completed, "nothing was committed anywhere").toBe(0);
       const els = await elements(page);
       expect(texts(els).length).toBe(0);
-      expect(shapes(els, "ellipse").length).toBe(0);
+      expect(markers(els).length).toBe(0);
+      expect(els.length).toBe(0);
       await evidence(page, "g5c-delete-pending");
     } finally {
       await browser.close();
@@ -626,24 +767,20 @@ test.describe("voice areas", () => {
       expect(await ids()).toEqual(expect.arrayContaining(["seed-rect-00000000001", "seed-text-00000000001"]));
       expect(await background()).toBe("#fffce8");
 
+      const view = await transform(page);
+      const path = oval({ x: 1000, y: 500 }, 20);
+      const region = sceneBBox(view, path);
       const t0 = await armHold(page);
-      await drawStroke(page, oval({ x: 1000, y: 500 }, 20), { stepMs: 16 });
+      await drawStroke(page, path, { stepMs: 16 });
       await waitUntilWall(page, t0, 4_500);
       await releaseHold(page);
-      // The seeded note is also a transcript-shaped text, so the assertion follows the CONTAINER binding.
+      // The seeded note is also a transcript-shaped text, so the assertion follows the REGION the stroke drew.
       await expect
-        .poll(
-          async () => {
-            const els = await elements(page);
-            const container = shapes(els, "ellipse")[0];
-            return container ? boundText(els, container.id) : "";
-          },
-          { timeout: 30_000 },
-        )
+        .poll(async () => wordsIn(await elements(page), region), { timeout: 30_000 })
         .toMatch(/voice/i);
       const withVoice = await elements(page);
-      const spokenContainer = shapes(withVoice, "ellipse")[0]!;
-      const spoken = finalTexts(withVoice).find((el) => el.containerId === spokenContainer.id)!;
+      const spoken = textIn(withVoice, region)!;
+      expect(markers(withVoice).length, "the region marker is gone before the reload").toBe(0);
 
       // Give the 300 ms debounce a chance before the reload races it (beforeunload flushes anyway).
       await page.waitForTimeout(600);
@@ -651,24 +788,29 @@ test.describe("voice areas", () => {
       await waitForVoiceReady(page);
       const after = await elements(page);
       expect(after.map((el) => el.id)).toEqual(
-        expect.arrayContaining([
-          "seed-rect-00000000001",
-          "seed-text-00000000001",
-          spokenContainer.id,
-          spoken.id,
-        ]),
+        expect.arrayContaining(["seed-rect-00000000001", "seed-text-00000000001", spoken.id]),
       );
-      expect(after.find((el) => el.id === spoken.id)?.text).toBe(spoken.text);
-      expect(after.find((el) => el.id === spoken.id)?.containerId).toBe(spokenContainer.id);
+      // A free text has no container to be re-laid-out against, and the sweep must not touch it: same text, same
+      // box, same place on the board after a reload.
+      const reloaded = after.find((el) => el.id === spoken.id)!;
+      expect(reloaded.text).toBe(spoken.text);
+      expect(reloaded.containerId, "still free text").toBeNull();
+      expect(reloaded.x).toBeCloseTo(spoken.x, 1);
+      expect(reloaded.y).toBeCloseTo(spoken.y, 1);
+      expect(reloaded.width).toBeCloseTo(spoken.width, 1);
+      expect(reloaded.height).toBeCloseTo(spoken.height, 1);
+      expect(reloaded.fontSize).toBe(spoken.fontSize);
+      expect(insideBox(reloaded, region), "and still inside the region it was spoken into").toBe(true);
       await evidence(page, "g6-continuity");
     } finally {
       await browser.close();
     }
   });
 
-  test("native tool modifier: a rectangle drawn with the native tool takes the transcript", async () => {
+  test("native tool modifier: a rectangle drawn with the native tool marks the region and vanishes", async () => {
     const { browser, page } = await launchWithClip(EN_SHORT);
     try {
+      const view = await transform(page);
       await page.locator('label.ToolIcon:has([data-testid="toolbar-rectangle"])').click();
       await expect
         .poll(async () => page.evaluate(() => window.__excalidrawVoice!.api.getAppState().activeTool.type))
@@ -683,20 +825,29 @@ test.describe("voice areas", () => {
       }
       await page.mouse.up();
       await expect
-        .poll(async () => shapes(await elements(page), "rectangle").length, { timeout: 15_000 })
+        .poll(async () => markers(await elements(page)).length, { timeout: 15_000 })
         .toBe(1);
+
+      // The rectangle the founder drew with the native tool IS the marker: stamped, dashed, still its own size.
+      const pending = await elements(page);
+      const marker = markers(pending)[0]!;
+      expect(marker.type).toBe("rectangle");
+      expect(marker.strokeStyle).toBe("dashed");
+      expect(Math.abs(marker.width - 300)).toBeLessThanOrEqual(3);
+      expect(Math.abs(marker.height - 150)).toBeLessThanOrEqual(3);
+
       await waitUntilWall(page, t0, 4_500);
       await releaseHold(page);
 
       await expect.poll(async () => joined(await elements(page)), { timeout: 30_000 }).toMatch(/voice/i);
       const els = await elements(page);
-      const rect = shapes(els, "rectangle")[0]!;
-      expect(shapes(els, "ellipse").length).toBe(0);
+      const region = sceneBBox(view, [{ x: 500, y: 300 }, { x: 800, y: 450 }]);
+      expect(markers(els).length, "a native-tool region is a region: it goes with the commit").toBe(0);
+      expect(shapes(els, "rectangle").length).toBe(0);
       expect(finalTexts(els).length).toBe(1);
-      expect(finalTexts(els)[0]!.containerId).toBe(rect.id);
-      expect(Math.abs(rect.width - 300)).toBeLessThanOrEqual(3);
-      expect(Math.abs(rect.height - 150)).toBeLessThanOrEqual(3);
-      expect(rect.strokeStyle).toBe("solid");
+      const text = finalTexts(els)[0]!;
+      expect(text.containerId).toBeNull();
+      expect(insideBox(text, region, 3), `text ${JSON.stringify(text)} in ${JSON.stringify(region)}`).toBe(true);
       await evidence(page, "native-tool-modifier");
     } finally {
       await browser.close();
@@ -714,16 +865,18 @@ test.describe("voice areas", () => {
         timeout: 15_000,
       });
 
-      await drawStroke(page, oval({ x: 700, y: 450 }, 20), { stepMs: 16 });
+      const view = await transform(page);
+      const path = oval({ x: 700, y: 450 }, 20);
+      const region = sceneBBox(view, path);
+      await drawStroke(page, path, { stepMs: 16 });
       await page.waitForTimeout(4_000);
       await button.click();
       await expect.poll(async () => (await status(page)).mode, { timeout: 10_000 }).toBe("idle");
 
       await expect.poll(async () => joined(await elements(page)), { timeout: 30_000 }).toMatch(/voice/i);
       const latched = await elements(page);
-      const latchedContainer = shapes(latched, "ellipse")[0]!;
-      expect(latchedContainer, "the stroke must have become a container").toBeTruthy();
-      expect(boundText(latched, latchedContainer.id)).toMatch(/voice/i);
+      expect(markers(latched).length, "a latched take ends the same way a held one does").toBe(0);
+      expect(wordsIn(latched, region), "the words are inside the region that was drawn").toMatch(/voice/i);
       await expect(button).not.toHaveClass(/voice-tool--armed/);
       await evidence(page, "toolbar-latch");
     } finally {
@@ -795,14 +948,14 @@ test.describe("voice areas", () => {
       await settled(page, 3);
       const els = await assertThreeUtteranceWords(page);
       expect(shapes(els, "freedraw").length, "the tap left no ink").toBe(0);
-      expect(els.length, "three shapes and their three texts, nothing else").toBe(6);
+      expect(els.length, "three transcripts, nothing else: every marker has left").toBe(3);
       await evidence(page, "n6c-palm-tap");
     } finally {
       await browser.close();
     }
   });
 
-  test("N2a boundary: a zero-gap stroke pair produces two containers, both filled", async () => {
+  test("N2a boundary: a zero-gap stroke pair produces two regions, both written", async () => {
     const { browser, page } = await launchWithClip(THREE);
     try {
       // Pre-roll off for this case only. With the default 1.5 s the rule itself decides the outcome: the pair's
@@ -824,13 +977,14 @@ test.describe("voice areas", () => {
 
       const els = await elements(page);
       expect(shapes(els, "freedraw").length, "no stroke was left as raw ink").toBe(0);
-      expect(shapes(els, "ellipse").length, "exactly one container per stroke").toBe(2);
-      const a = nearest(els, "ellipse", { x: 420, y: 300 })!;
-      const b = nearest(els, "ellipse", { x: 1080, y: 300 })!;
+      expect(markers(els).length, "both regions committed and cleaned up after themselves").toBe(0);
+      expect(finalTexts(els).length, "exactly one transcript per stroke").toBe(2);
+      const a = nearestText(els, { x: 420, y: 300 })!;
+      const b = nearestText(els, { x: 1080, y: 300 })!;
       expect(a.id).not.toBe(b.id);
-      expect(boundText(els, a.id), "first container kept the first sentence").toMatch(/회의/);
-      expect(boundText(els, b.id), "second container kept what followed").toMatch(/voice/i);
-      expect(boundText(els, a.id)).not.toMatch(/voice/i);
+      expect(flat(a.text ?? ""), "first region kept the first sentence").toMatch(/회의/);
+      expect(flat(b.text ?? ""), "second region kept what followed").toMatch(/voice/i);
+      expect(flat(a.text ?? "")).not.toMatch(/voice/i);
       expect((await status(page)).orphans, "no sentence fell between the two strokes").toBe(0);
       await evidence(page, "n2a-zero-gap");
     } finally {
@@ -853,10 +1007,9 @@ test.describe("voice areas", () => {
       await settled(page, 1, 1);
       const els = await elements(page);
       expect(shapes(els, "freedraw").length, "not raw freedraw ink").toBe(0);
-      const ellipse = shapes(els, "ellipse")[0];
-      expect(ellipse, "the stroke became a container").toBeTruthy();
-      expect(shapes(els, "ellipse").length).toBe(1);
-      expect(boundText(els, ellipse!.id).trim(), "the speech in flight still landed").not.toBe("");
+      expect(markers(els).length, "the region was written and its marker removed").toBe(0);
+      expect(finalTexts(els).length, "one transcript, from the stroke that nearly got lost").toBe(1);
+      expect(flat(finalTexts(els)[0]!.text ?? ""), "the speech in flight still landed").not.toBe("");
       await evidence(page, "n2b-disarm-in-window");
     } finally {
       await browser.close();
@@ -870,26 +1023,26 @@ test.describe("voice areas", () => {
       const aCenter = { x: 420, y: 320 };
       const bCenter = { x: 1080, y: 560 };
       await drawStroke(page, oval(aCenter, 14), { stepMs: 14 });
-      await expect.poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
 
       await page.keyboard.press("Control+z");
-      // The undo of the placeholder step restores the raw freedraw stroke: the shape and its placeholder go away.
-      await expect.poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 10_000 }).toBe(0);
+      // The undo of the marker step restores the raw freedraw stroke: the marker and its placeholder go away.
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 10_000 }).toBe(0);
       const undone = await elements(page);
       expect(shapes(undone, "freedraw").length, "A is ink again").toBe(1);
       expect(texts(undone).length, "A's placeholder went with it").toBe(0);
 
       await drawStroke(page, oval(bCenter, 14), { stepMs: 14 });
-      await expect.poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
 
       const els = await elements(page);
-      const ellipse = shapes(els, "ellipse")[0]!;
-      expect(Math.abs(ellipse.x + ellipse.width / 2 - bCenter.x), "the placeholder is at B").toBeLessThanOrEqual(4);
-      expect(Math.abs(ellipse.y + ellipse.height / 2 - bCenter.y)).toBeLessThanOrEqual(4);
-      expect(ellipse.strokeStyle).toBe("dashed");
+      const marker = markers(els)[0]!;
+      expect(Math.abs(marker.x + marker.width / 2 - bCenter.x), "the marker is at B").toBeLessThanOrEqual(4);
+      expect(Math.abs(marker.y + marker.height / 2 - bCenter.y)).toBeLessThanOrEqual(4);
+      expect(marker.strokeStyle).toBe("dashed");
       const placeholders = texts(els).filter(isPlaceholder);
       expect(placeholders.length, "exactly one placeholder, B's").toBe(1);
-      expect(placeholders[0]!.containerId).toBe(ellipse.id);
+      expect(placeholders[0]!.containerId).toBe(marker.id);
       // A's restored ink is still ink: the undone stroke was never converted a second time.
       expect(shapes(els, "freedraw").length).toBe(1);
       await evidence(page, "n2c-undo-while-armed");
@@ -908,11 +1061,11 @@ test.describe("voice areas", () => {
       await recordUtterances(page);
       const t0 = await armHold(page);
       await drawStroke(page, oval({ x: 700, y: 420 }, 12), { stepMs: 12 });
-      await expect.poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 15_000 }).toBe(1);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 15_000 }).toBe(1);
 
-      // Ctrl+Z while the sentence is still being spoken: the placeholder pair leaves the scene mid-utterance.
+      // Ctrl+Z while the sentence is still being spoken: the marker pair leaves the scene mid-utterance.
       await page.keyboard.press("Control+z");
-      await expect.poll(async () => shapes(await elements(page), "ellipse").length, { timeout: 10_000 }).toBe(0);
+      await expect.poll(async () => markers(await elements(page)).length, { timeout: 10_000 }).toBe(0);
       expect(texts(await elements(page)).length, "the placeholder went with it").toBe(0);
 
       const utterance = await waitForUtterance(page, 1);
@@ -927,8 +1080,8 @@ test.describe("voice areas", () => {
       const els = await elements(page);
       const placed = finalTexts(els);
       expect(placed.length, "exactly one text carries the sentence").toBe(1);
-      expect(placed[0]!.containerId, "free text, not bound to the shape the founder undid").toBeNull();
-      expect(shapes(els, "ellipse").length, "the undone shape stays undone").toBe(0);
+      expect(placed[0]!.containerId, "free text, not bound to the region the founder undid").toBeNull();
+      expect(markers(els).length, "the undone region stays undone").toBe(0);
       expect(shapes(els, "freedraw").length, "the restored ink is still ink").toBe(1);
       await evidence(page, "n2d-undo-before-speech");
     } finally {
@@ -963,7 +1116,7 @@ test.describe("voice areas", () => {
       // A stroke now is an ordinary drawing action, not a placeholder nothing can ever fill.
       await drawStroke(page, oval({ x: 700, y: 450 }, 14), { stepMs: 14 });
       const els = await elements(page);
-      expect(shapes(els, "ellipse").length).toBe(0);
+      expect(markers(els).length, "no region was marked, so the ink is just ink").toBe(0);
       expect(texts(els).length).toBe(0);
       await evidence(page, "n3-mic-denied");
     } finally {
@@ -990,14 +1143,15 @@ test.describe("voice areas", () => {
         await page.waitForTimeout(400);
 
         const els = await elements(page);
-        const ellipse = shapes(els, "ellipse")[0];
-        expect(ellipse, `an ellipse at zoom ${zoom}`).toBeTruthy();
-        expect(shapes(els, "ellipse").length, `one ellipse at zoom ${zoom}`).toBe(1);
-        expect(ellipse!.width, `scene width at zoom ${zoom}`).toBeCloseTo(300 / zoom, 0);
-        expect(ellipse!.height, `scene height at zoom ${zoom}`).toBeCloseTo(160 / zoom, 0);
-        expect(Math.abs(ellipse!.x - expectedBox.x), `scene x at zoom ${zoom}`).toBeLessThanOrEqual(2);
+        const marker = markers(els)[0];
+        expect(marker, `a region marker at zoom ${zoom}`).toBeTruthy();
+        expect(markers(els).length, `one marker at zoom ${zoom}`).toBe(1);
+        expect(marker!.type, `the marker is the region's box at zoom ${zoom}`).toBe("rectangle");
+        expect(marker!.width, `scene width at zoom ${zoom}`).toBeCloseTo(300 / zoom, 0);
+        expect(marker!.height, `scene height at zoom ${zoom}`).toBeCloseTo(160 / zoom, 0);
+        expect(Math.abs(marker!.x - expectedBox.x), `scene x at zoom ${zoom}`).toBeLessThanOrEqual(2);
         expect(shapes(els, "freedraw").length, `the tap left no ink at zoom ${zoom}`).toBe(0);
-        expect(els.length, `only the ellipse and its placeholder at zoom ${zoom}`).toBe(2);
+        expect(els.length, `only the marker and its placeholder at zoom ${zoom}`).toBe(2);
         await evidence(page, `n5-zoom-${zoom}`);
 
         await releaseHold(page);
@@ -1011,87 +1165,109 @@ test.describe("voice areas", () => {
     }
   });
 
-  test("R3 ghosts: a placeholder left by a reload is swept back to a plain shape", async () => {
-    const ghost = [
-      {
-        id: "ghost-rect-0000000001",
-        type: "rectangle",
-        x: 400,
-        y: 260,
-        width: 260,
-        height: 140,
-        angle: 0,
-        strokeColor: "#1e1e1e",
-        backgroundColor: "transparent",
-        fillStyle: "solid",
-        strokeWidth: 2,
-        strokeStyle: "dashed",
-        roughness: 1,
-        opacity: 100,
-        groupIds: [],
-        frameId: null,
-        roundness: { type: 3 },
-        seed: 123_456_789,
-        version: 7,
-        versionNonce: 987_654_321,
-        index: "a0",
-        isDeleted: false,
-        boundElements: [{ id: "ghost-text-0000000001", type: "text" }],
-        updated: 1_726_000_000_000,
-        link: null,
-        locked: false,
-      },
-      {
-        id: "ghost-text-0000000001",
+  test("R3 ghosts: a reload deletes the markers and placeholders a take left behind", async () => {
+    // Three seeded cases in one scene: the region marker a reload stranded (with its placeholder), a plain shape
+    // the founder drew themselves, and a pre-round-4a container that still holds a ghost label.
+    const base = (id: string, extra: Record<string, unknown>) => ({
+      id,
+      x: 400,
+      y: 260,
+      width: 260,
+      height: 140,
+      angle: 0,
+      strokeColor: "#1e1e1e",
+      backgroundColor: "transparent",
+      fillStyle: "solid",
+      strokeWidth: 2,
+      strokeStyle: "solid",
+      roughness: 1,
+      opacity: 100,
+      groupIds: [],
+      frameId: null,
+      roundness: null,
+      seed: 123_456_789,
+      version: 7,
+      versionNonce: 987_654_321,
+      isDeleted: false,
+      boundElements: null,
+      updated: 1_726_000_000_000,
+      link: null,
+      locked: false,
+      ...extra,
+    });
+    const ghostText = (id: string, containerId: string | null, extra: Record<string, unknown>) =>
+      base(id, {
         type: "text",
-        x: 500,
-        y: 310,
         width: 24,
         height: 35,
-        angle: 0,
-        strokeColor: "#1e1e1e",
-        backgroundColor: "transparent",
-        fillStyle: "solid",
-        strokeWidth: 2,
-        strokeStyle: "solid",
-        roughness: 1,
-        opacity: 100,
-        groupIds: [],
-        frameId: null,
-        roundness: null,
-        seed: 192_837_465,
-        version: 3,
-        versionNonce: 564_738_291,
-        index: "a1",
-        isDeleted: false,
-        boundElements: null,
-        updated: 1_726_000_000_000,
-        link: null,
-        locked: false,
         text: "··",
+        originalText: "··",
         fontSize: 28,
         fontFamily: 5,
         textAlign: "center",
         verticalAlign: "middle",
-        containerId: "ghost-rect-0000000001",
-        originalText: "··",
+        containerId,
         lineHeight: 1.25,
         autoResize: true,
-      },
+        ...extra,
+      });
+    const seeded = [
+      base("marker-rect-000000001", {
+        type: "rectangle",
+        strokeStyle: "dashed",
+        index: "a0",
+        customData: { voiceRegion: true },
+        boundElements: [{ id: "marker-text-000000001", type: "text" }],
+      }),
+      ghostText("marker-text-000000001", "marker-rect-000000001", { x: 500, y: 310, index: "a1" }),
+      base("marker-line-000000001", {
+        type: "line",
+        x: 900,
+        y: 700,
+        width: 200,
+        height: 0,
+        points: [[0, 0], [200, 0]],
+        strokeStyle: "dashed",
+        index: "a2",
+        customData: { voiceRegion: true },
+      }),
+      ghostText("marker-line-text-00001", null, { x: 960, y: 660, index: "a3" }),
+      base("mine-rect-00000000001", { type: "rectangle", x: 200, y: 700, index: "a4" }),
+      base("legacy-rect-000000001", {
+        type: "rectangle",
+        x: 1200,
+        y: 200,
+        strokeStyle: "dashed",
+        index: "a5",
+        boundElements: [{ id: "legacy-text-000000001", type: "text" }],
+      }),
+      ghostText("legacy-text-000000001", "legacy-rect-000000001", { x: 1300, y: 250, index: "a6" }),
     ];
     const { browser, page } = await launchWithClip(`${ensureSilenceClip()}%noloop`, {
-      seed: { excalidraw: JSON.stringify(ghost) },
+      seed: { excalidraw: JSON.stringify(seeded) },
     });
     try {
       const els = await elements(page);
-      const rect = els.find((el) => el.id === "ghost-rect-0000000001");
-      expect(rect, "the founder's shape survives the sweep").toBeTruthy();
-      expect(rect!.strokeStyle, "the pending cue is gone").toBe("solid");
-      expect(rect!.width).toBe(260);
-      expect(rect!.height).toBe(140);
-      expect(rect!.boundElements ?? [], "the ghost is unbound").toHaveLength(0);
+      const byId = (id: string) => els.find((el) => el.id === id);
+
+      expect(markers(els), "no region marker survives a reload: nothing can finish that take").toHaveLength(0);
+      expect(byId("marker-rect-000000001"), "the stranded rectangle marker is gone").toBeUndefined();
+      expect(byId("marker-text-000000001"), "and so is its placeholder").toBeUndefined();
+      expect(byId("marker-line-000000001"), "the stranded line marker is gone").toBeUndefined();
+      expect(byId("marker-line-text-00001"), "and its unbound placeholder with it").toBeUndefined();
       expect(texts(els).some((el) => isPlaceholder(el)), "no placeholder text is left").toBe(false);
-      expect(els.find((el) => el.id === "ghost-text-0000000001"), "the ghost text is gone").toBeUndefined();
+
+      const mine = byId("mine-rect-00000000001");
+      expect(mine, "a shape the founder drew is not a marker and is never swept").toBeTruthy();
+      expect(mine!.strokeStyle).toBe("solid");
+      expect(mine!.width).toBe(260);
+
+      // A container from before round 4a: the founder's shape stays, only the ghost label is cleaned off it.
+      const legacy = byId("legacy-rect-000000001");
+      expect(legacy, "the founder's pre-4a shape survives the sweep").toBeTruthy();
+      expect(legacy!.strokeStyle, "the pending cue is gone").toBe("solid");
+      expect(legacy!.boundElements ?? [], "the ghost is unbound").toHaveLength(0);
+      expect(byId("legacy-text-000000001"), "the ghost text is gone").toBeUndefined();
       await evidence(page, "r3-ghost-sweep");
     } finally {
       await browser.close();
