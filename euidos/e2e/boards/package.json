@@ -1,0 +1,13 @@
+{
+  "name": "@euidos/e2e-boards",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Boards-page acceptance (collab-plan phase 3) against a REHEARSAL of the euidos-internal stack: real nginx, real storage backend, real Postgres, real socket relay.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

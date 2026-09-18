@@ -13,6 +13,13 @@ import type { UtteranceEvent } from "../../../excalidraw-app/voice/contracts-cap
 
 /** Overridable so the suite can be pointed at a scratch build while diagnosing an app defect. */
 export const APP_URL = process.env.VOICE_APP_URL ?? "http://127.0.0.1:4173";
+/**
+ * Where the EDITOR lives. Since the boards index landed (collab-plan phase 3) the bare origin is the boards page,
+ * so the gates address the local scratch scene explicitly — `#local` is any hash that is not `#room=`/`#json=`,
+ * which is what excalidraw-app/boards/route.ts treats as "the editor was asked for on purpose". Kept separate
+ * from APP_URL because grantPermissions() wants an ORIGIN, not a URL with a fragment.
+ */
+export const EDITOR_URL = `${APP_URL}/#local`;
 export const FIXTURES = resolve("fixtures");
 export const EVIDENCE = resolve("test-results/evidence");
 
@@ -101,7 +108,7 @@ export async function launchWithClip(clipPath: string, opts: LaunchOptions = {})
       localStorage.setItem("__e2e-seeded", "1");
     }, seed);
     if (!opts.skipGoto) {
-      await page.goto(APP_URL);
+      await page.goto(EDITOR_URL);
       await waitForVoiceReady(page);
     }
     return { browser, page };
