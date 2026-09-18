@@ -141,6 +141,8 @@ import { ExcalidrawPlusIframeExport } from "./ExcalidrawPlusIframeExport";
 
 import { sweepGhostPlaceholders, VoiceTool } from "./voice";
 
+import { BoardsRoute } from "./boards";
+
 import "./index.scss";
 
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
@@ -1272,7 +1274,14 @@ const ExcalidrawApp = () => {
     <TopErrorBoundary>
       <Provider store={appJotaiStore}>
         <ExcalidrawAPIProvider>
-          <ExcalidrawWrapper />
+          {/*
+           * euidos: the boards index is this app's home screen — `/boards`, and
+           * `/` when no `#room=`/`#json=`/other hash addresses the editor on
+           * purpose. The whole route rule lives in boards/route.ts.
+           */}
+          <BoardsRoute>
+            <ExcalidrawWrapper />
+          </BoardsRoute>
         </ExcalidrawAPIProvider>
       </Provider>
     </TopErrorBoundary>

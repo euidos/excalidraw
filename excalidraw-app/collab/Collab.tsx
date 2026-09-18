@@ -89,6 +89,7 @@ import {
 } from "../data/localStorage";
 import { resetBrowserStateVersions } from "../data/tabSync";
 import { LIVE_SCAFFOLDING_MS, sweepGhostPlaceholders } from "../voice/persist";
+import { displayNameFor, getIdentity } from "../boards/identity";
 
 import { collabErrorIndicatorAtom } from "./CollabError";
 import Portal from "./Portal";
@@ -508,15 +509,36 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
   private fallbackInitializationHandler: null | (() => any) = null;
 
+  /**
+   * euidos: the collaborator name is the EDGE identity, not a free-text field.
+   * `/api/me` is the Access JWT's email (public origin) or the
+   * `Tailscale-User-Login` Serve stamped (tailnet origin); the wall PC carries
+   * neither and shows as "Wall" (collab-plan phase 3 §2).
+   *
+   * Deliberately NOT awaited by `startCollaboration`: a round trip to /api/me
+   * before the socket opens would delay every join by its latency, and the name
+   * reaches peers either way — `setUsername` re-broadcasts our own collaborator
+   * entry once it lands. Upstream's random-username fallback is kept for the
+   * only case it still makes sense in: the identity lookup failed AND this
+   * browser has no name of its own.
+   */
+  private applyEdgeIdentity = async () => {
+    try {
+      this.setUsername(displayNameFor(await getIdentity()));
+    } catch {
+      if (!this.state.username) {
+        const { getRandomUsername } = await import(
+          "@excalidraw/random-username"
+        );
+        this.setUsername(getRandomUsername());
+      }
+    }
+  };
+
   startCollaboration = async (
     existingRoomLinkData: null | { roomId: string; roomKey: string },
   ) => {
-    if (!this.state.username) {
-      import("@excalidraw/random-username").then(({ getRandomUsername }) => {
-        const username = getRandomUsername();
-        this.setUsername(username);
-      });
-    }
+    void this.applyEdgeIdentity();
 
     if (this.portal.socket) {
       return null;

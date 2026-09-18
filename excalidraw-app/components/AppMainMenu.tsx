@@ -15,6 +15,7 @@ import { LanguageList } from "../app-language/LanguageList";
 import { isExcalidrawPlusSignedUser } from "../app_constants";
 
 import { VoiceSettingsMenuItem } from "../voice";
+import { BoardsMenuItem } from "../boards";
 
 import { saveDebugState } from "./DebugCanvas";
 
@@ -28,6 +29,9 @@ export const AppMainMenu: React.FC<{
   const { t } = useI18n();
   return (
     <MainMenu>
+      {/* Own group, first: the way back to the boards index (see boards/). */}
+      <BoardsMenuItem />
+      <MainMenu.Separator />
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
       <MainMenu.DefaultItems.Export />
