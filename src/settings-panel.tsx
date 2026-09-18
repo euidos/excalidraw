@@ -68,6 +68,35 @@ export function SettingsPanel({
   const [mics, setMics] = useState<MicOption[]>([]);
   const [test, setTest] = useState<TestState>({ kind: "idle" });
 
+  /**
+   * Escape, or a tap anywhere outside the panel, closes it. The wall panel has no keyboard and no console: without
+   * this the only way out is the small ✕, and a stray tap on the canvas behind the panel does nothing at all.
+   * `pointerdown` in the capture phase, so a tap that lands on the canvas closes the panel before it draws.
+   */
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !(target instanceof Element && target.closest(".voice-settings"))) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [open, onClose]);
+
   useEffect(() => {
     if (!open) {
       return;

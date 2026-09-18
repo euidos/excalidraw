@@ -133,7 +133,7 @@ vi.mock("@excalidraw/excalidraw", () => ({
   },
 }));
 
-import { isRegionMarker, type StrokeShape, type StyleSnapshot } from "../../src/contracts";
+import { isFailedWarning, isRegionMarker, type StrokeShape, type StyleSnapshot } from "../../src/contracts";
 import { fit } from "../../src/fit";
 import type { ExcalidrawElement, ExcalidrawTextElement } from "@excalidraw/excalidraw/element/types";
 
@@ -319,6 +319,35 @@ describe("failure keeps the marker, a discard keeps nothing", () => {
     expect(failed).toHaveLength(1);
     expect(textOf(failed).containerId).toBeNull();
     expect(textOf(failed).text).toBe("⚠ STT");
+  });
+
+  it("stamps the warning so a reload can sweep it, bound or not", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    const bound = textOf(fit.markFailed(built.target, marker!, asText(placeholder!), style));
+    expect(isFailedWarning(bound), "litter is decided by the stamp, never by reading the text").toBe(true);
+
+    const free = textOf(fit.markFailed(built.target, null, asText(placeholder!), style));
+    expect(isFailedWarning(free), "an unbound warning is the case the sweep could not see at all").toBe(true);
+  });
+
+  it("clears the stamp again when a retry finally lands the words", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    const warned = asText(textOf(fit.markFailed(built.target, marker!, asText(placeholder!), style)) as unknown as ExcalidrawElement);
+    const committed = textOf(fit.commitText(built.target, warned, SENTENCE, style, null));
+    expect(isFailedWarning(committed), "otherwise the next reload would sweep the transcript away").toBe(false);
+  });
+
+  it("never writes over words that already landed", () => {
+    const built = fit.buildPlaceholder(OVAL, style);
+    const [marker, placeholder] = built.elements;
+    // First take commits (the marker goes), then a second utterance into the same region fails.
+    const committed = asText(
+      textOf(fit.commitText(built.target, asText(placeholder!), SENTENCE, style, marker)) as unknown as ExcalidrawElement,
+    );
+    const failed = fit.markFailed(built.target, null, committed, style);
+    expect(failed, "the transcript is the only copy there is: nothing may overwrite it").toHaveLength(0);
   });
 
   it("deletes BOTH halves when no speech ever landed", () => {

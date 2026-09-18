@@ -33,7 +33,7 @@ import type {
   FontFamilyValues,
   StrokeStyle,
 } from "@excalidraw/excalidraw/element/types";
-import { VOICE_REGION_CUSTOM_DATA } from "./contracts";
+import { VOICE_FAILED_CUSTOM_DATA, VOICE_REGION_CUSTOM_DATA } from "./contracts";
 import type {
   FitModule,
   FitOptions,
@@ -63,7 +63,6 @@ const FAILED_COLOR = "#c92a2a";
 /** Guard rails so a corrupt settings value can never produce a NaN-sized element. */
 const FONT_SIZE_CEILING = 400;
 
-type AreaType = "rectangle" | "ellipse" | "diamond";
 type Geometry = { x: number; y: number; width: number; height: number; angle: number };
 type ShapeProps = {
   strokeColor: string;
@@ -78,8 +77,13 @@ type ShapeProps = {
 /** Everything a piece of text needs that is not its content, size or position. */
 type LabelProps = { fontFamily: FontFamilyValues; strokeColor: string; opacity: number };
 type BoundPair = { container: ExcalidrawElement; text: ExcalidrawTextElement };
-/** The stand-in shape a measurement is made in: everything about it except the text and its size. */
-type Probe = { type: AreaType; geom: Geometry; props: ShapeProps; label: LabelProps };
+/**
+ * The stand-in shape a measurement is made in: everything about it except the text and its size. Always a
+ * RECTANGLE — the region a take is fitted into is the bounding box the founder drew, and the marker is gone by the
+ * time the words land, so there is no ellipse or diamond to be faithful to (round 4c: one probe shape for the
+ * placeholder and for the commit).
+ */
+type Probe = { type: "rectangle"; geom: Geometry; props: ShapeProps; label: LabelProps };
 type LineGeometry = { mid: Point; dx: number; dy: number; length: number };
 /** x/y are the top-left BEFORE rotation; Excalidraw spins a text element around its own centre. */
 type LineTextLayout = {
@@ -93,8 +97,6 @@ type LineTextLayout = {
   angle: number;
   autoResize: boolean;
 };
-
-const AREA_TYPES: readonly string[] = ["rectangle", "ellipse", "diamond"];
 
 /** Style never changes text metrics, so a measurement-only probe container uses one fixed, cheap style. */
 const MEASURE_PROPS: ShapeProps = {
@@ -120,8 +122,6 @@ const isTextElement = <T extends ExcalidrawElement>(el: T | null | undefined): e
 
 const isLinearElement = <T extends ExcalidrawElement>(el: T | null | undefined): el is T & ExcalidrawLinearElement =>
   !!el && (el.type === "line" || el.type === "arrow");
-
-const isAreaType = (type: string): type is AreaType => AREA_TYPES.includes(type);
 
 /**
  * The module's single failure boundary. A throw from the library means its text metrics are gone, which cannot
@@ -198,6 +198,29 @@ function markerProps(strokeColor: string, roughness: number): ShapeProps {
  */
 const stamp = (el: ExcalidrawElement): ExcalidrawElement =>
   newElementWith(el, { customData: { ...el.customData, ...VOICE_REGION_CUSTOM_DATA } });
+
+/**
+ * The `customData` a take's TEXT carries: the failure stamp while it shows "⚠ STT", nothing once words have landed.
+ * Computed as part of the one patch that writes the text, so the version counter still bumps exactly once.
+ */
+function textCustomData(el: ExcalidrawElement, failed: boolean): Record<string, unknown> {
+  const { voiceFailed: _was, ...rest } = (el.customData ?? {}) as Record<string, unknown>;
+  return failed ? { ...rest, ...VOICE_FAILED_CUSTOM_DATA } : rest;
+}
+
+/**
+ * Does this text already carry words the founder said? A LATER failure may never overwrite them (round 4c): the
+ * committed transcript lives only on the canvas, so writing "⚠ STT" over it destroyed it for good once the page
+ * reloaded. A placeholder dot, an empty text or an earlier warning are all fair game.
+ */
+function hasLandedTranscript(text: ExcalidrawTextElement): boolean {
+  const content = String(text.originalText ?? text.text ?? "").trim();
+  if (!content) {
+    return false;
+  }
+  return !PLACEHOLDER_FRAMES.includes(content as (typeof PLACEHOLDER_FRAMES)[number]) &&
+    !content.startsWith(FAILED_TEXT);
+}
 
 /** Once the text is placed the marker leaves the scene in the SAME update; an absent marker is normal, not an error. */
 const removeMarker = (marker: ExcalidrawElement | null | undefined): ExcalidrawElement[] =>
@@ -444,10 +467,19 @@ function layoutLineText(g: LineGeometry, content: string, fontFamily: FontFamily
   };
 }
 
-/** Puts a line layout on a text element: the caller's own on commit, a fresh one for a placeholder. */
-function applyLineLayout(text: ExcalidrawTextElement | null, layout: LineTextLayout, label: LabelProps) {
+/**
+ * Puts a line layout on a text element: the caller's own on commit, a fresh one for a placeholder. `customData`
+ * carries (or clears) the failure stamp when the caller knows which it is; a placeholder passes nothing.
+ */
+function applyLineLayout(
+  text: ExcalidrawTextElement | null,
+  layout: LineTextLayout,
+  label: LabelProps,
+  customData?: Record<string, unknown>,
+) {
   const base = text ?? newText({ text: layout.text, fontSize: layout.fontSize, label, x: layout.x, y: layout.y });
   return newElementWith(base, {
+    ...(customData === undefined ? {} : { customData }),
     text: layout.text,
     originalText: layout.originalText,
     fontSize: layout.fontSize,
@@ -471,8 +503,10 @@ function applyBoundLayout(
   probed: ExcalidrawTextElement,
   containerId: string,
   originalText: string,
+  customData?: Record<string, unknown>,
 ): ExcalidrawTextElement {
   return newElementWith(text, {
+    ...(customData === undefined ? {} : { customData }),
     text: probed.text,
     originalText,
     fontSize: probed.fontSize,
@@ -502,8 +536,10 @@ function applyFreeLayout(
   text: ExcalidrawTextElement,
   probed: ExcalidrawTextElement,
   originalText: string,
+  customData?: Record<string, unknown>,
 ): ExcalidrawTextElement {
   return newElementWith(text, {
+    ...(customData === undefined ? {} : { customData }),
     text: probed.text,
     originalText,
     fontSize: probed.fontSize,
@@ -621,17 +657,18 @@ function buildPlaceholderFor(container: ExcalidrawElement, style: StyleSnapshot,
     if (isLinearElement(container)) {
       return linePlaceholder(dashed, shape, label, minFontSize, lineMaxFontSize);
     }
-    const type: AreaType = isAreaType(container.type) ? container.type : "rectangle";
     const geom = geometryOf(container);
-    const probe: Probe = { type, geom, props: shapeProps(container, type, "dashed"), label };
+    // Measured in the same rectangle a commit is measured in, whatever the founder drew: the words are fitted to
+    // the region's bounding box, so fitting the dot to an ellipse's inner box would be a different question.
+    const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const wanted = Math.max(minFontSize, placeholderFontSize(geom, maxFontSize));
     const pair = fitBoundText(probe, PLACEHOLDER_FRAMES[0], minFontSize, wanted);
     const text = newElementWith(pair.text, { containerId: container.id });
+    // Only the marker's LOOK changes: the user's geometry is the user's (CLAUDE.md), and a probe that grew is a
+    // throwaway — copying its size onto the founder's own shape would resize a shape they drew.
     const updated = stamp(
       newElementWith(container, {
         strokeStyle: "dashed" as StrokeStyle,
-        width: pair.container.width,
-        height: pair.container.height,
         boundElements: withTextBinding(container.boundElements, text.id),
       }),
     );
@@ -681,49 +718,61 @@ function commitText(
     }
     const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
     const label = labelOf(style, style.fontFamily);
+    // Words landing clear the failure stamp in the same patch, so a reload's ghost sweep never eats a transcript.
+    const landed = textCustomData(text, false);
     if (shape?.kind === "line" || isLinearElement(live)) {
       const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, content, style.fontFamily, lineMinFontSize, lineMaxFontSize);
-      return [applyLineLayout(text, layout, label), ...removeMarker(live)];
+      return [applyLineLayout(text, layout, label, landed), ...removeMarker(live)];
     }
     const geom = shape ? geometryOfShape(shape) : geometryOf(text);
     // Measured in a throwaway rectangle the size of the region: the largest font size the library's own layout
     // fits inside it without growing it. The probe is discarded; only its layout survives, on a free text element.
     const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const pair = fitBoundText(probe, content, minFontSize, maxFontSize);
-    return [applyFreeLayout(text, pair.text, content), ...removeMarker(live)];
+    return [applyFreeLayout(text, pair.text, content, landed), ...removeMarker(live)];
   });
 }
 
 /**
  * The transcription failed: the warning goes in the region and the marker STAYS dashed, because the retry button
  * needs something the founder can see and point at. A retry that succeeds runs commitText, which removes it.
+ *
+ * Nothing is written when the text already carries LANDED WORDS (a second utterance into a region whose first take
+ * committed, or a retry after a commit): the words are the only copy there is, and reporting a failure is not worth
+ * destroying them — the toast, `status.failed` and the retry button carry that news instead (round 4c).
  */
 function markFailed(
   target: VoiceTarget, marker: ExcalidrawElement | null, text: ExcalidrawTextElement, style: StyleSnapshot,
 ): ExcalidrawElement[] {
   const live = marker && !marker.isDeleted ? marker : null;
   return guarded("markFailed", live ? [live, text] : [text], () => {
+    if (hasLandedTranscript(text)) {
+      return [];
+    }
     const shape = target?.shape ?? (live ? shapeOfElement(live) : undefined);
     const label = { ...labelOf(style, style.fontFamily), strokeColor: FAILED_COLOR };
+    // The stamp is what persist.ts sweeps on: a warning may be UNBOUND (a line region, or a region whose marker an
+    // earlier commit removed), and litter must not be decided by reading the text content.
+    const stamped = textCustomData(text, true);
     if (shape?.kind === "line" || isLinearElement(live)) {
       const g = lineGeometry(live, shape);
       const layout = layoutLineText(g, FAILED_TEXT, style.fontFamily, FAILED_FONT_SIZE, FAILED_FONT_SIZE);
-      return [applyLineLayout(text, layout, label)];
+      return [applyLineLayout(text, layout, label, stamped)];
     }
     const geom = shape ? geometryOfShape(shape) : geometryOf(text);
     const probe: Probe = { type: "rectangle", geom, props: MEASURE_PROPS, label };
     const pair = probeBoundPair(probe, FAILED_TEXT, FAILED_FONT_SIZE);
     if (!live) {
-      // A retry of a region whose marker the first commit already removed: the warning stands on its own.
-      return [applyFreeLayout(text, pair.text, FAILED_TEXT)];
+      // A first take that failed into a region whose marker is already gone: the warning stands on its own.
+      return [applyFreeLayout(text, pair.text, FAILED_TEXT, stamped)];
     }
     return [
       newElementWith(live, {
         strokeStyle: "dashed" as StrokeStyle,
         boundElements: withTextBinding(live.boundElements, target?.textId || text.id),
       }),
-      applyBoundLayout(text, pair.text, live.id, FAILED_TEXT),
+      applyBoundLayout(text, pair.text, live.id, FAILED_TEXT, stamped),
     ];
   });
 }
@@ -750,6 +799,28 @@ function buildFreeText(at: Point, transcript: string, style: StyleSnapshot, font
   });
 }
 
+/**
+ * The fonts every measurement depends on, loaded once.
+ *
+ * Text metrics are font metrics: a fit made before Excalifont has arrived is made against the fallback font and
+ * comes out one or two sizes off, which on a 240x120 region is the difference between "inside the box" and a
+ * transcript spilling out of a region whose marker the commit has just deleted. `document.fonts.ready` alone is not
+ * enough — the library only registers/loads its webfont when text is first MEASURED, so awaiting `ready` before any
+ * measurement resolves immediately and the first real fit is still a fallback fit. So: measure once, then await.
+ * Cached, so every later caller gets the same settled promise (the controller awaits it before it arms).
+ */
+let fontsWarm: Promise<void> | null = null;
+function warmFonts(fontFamily = 5): Promise<void> {
+  return (fontsWarm ??= (async (): Promise<void> => {
+    try {
+      measureOnly("font warm up", 20, fontFamily);
+      await document.fonts?.ready;
+    } catch (err) {
+      console.warn("fit: font warm-up failed; the first fit may use fallback metrics", err);
+    }
+  })());
+}
+
 export const fit: FitModule & { measureOnly: typeof measureOnly } = {
   buildPlaceholder,
   buildPlaceholderFor,
@@ -757,6 +828,7 @@ export const fit: FitModule & { measureOnly: typeof measureOnly } = {
   commitText,
   markFailed,
   discard,
+  warmFonts,
   buildFreeText,
   measureOnly,
 };

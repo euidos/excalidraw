@@ -9,7 +9,14 @@
 import { describe, expect, it } from "vitest";
 
 import { createVad, FLOOR_MULTIPLIER } from "../../src/vad";
-import { effectiveThreshold, METER_FULL_SCALE, meterPercent, meterScale } from "../../src/level";
+import {
+  effectiveThreshold,
+  GLYPH_FULL_SCALE,
+  glyphLevel,
+  METER_FULL_SCALE,
+  meterPercent,
+  meterScale,
+} from "../../src/level";
 
 describe("meterScale — bar and marker are the same function of the same unit", () => {
   it("puts the marker exactly where the bar ends when the room sits on the threshold", () => {
@@ -65,5 +72,48 @@ describe("meterScale — bar and marker are the same function of the same unit",
     expect(meterPercent(0)).toBe(0);
     expect(meterPercent(METER_FULL_SCALE)).toBe(100);
     expect(meterPercent(0.4), "speech pins the bar rather than escaping the element").toBe(100);
+  });
+});
+
+/**
+ * The mic glyph is a SECOND axis on purpose (round 4c): the meter exists to aim the VAD slider (0.003..0.05) and the
+ * glyph exists to say "the room is being heard", so drawing the glyph on the meter's 0.06 full scale pinned it at
+ * 100% through whole sentences — measured speech on the wall runs 0.08..0.48 — and the animation the founder asked
+ * for read as an on/off strobe at word boundaries instead of a level. Still one function per axis.
+ */
+describe("glyphLevel — the mic glyph's own display curve", () => {
+  it("is 0 at silence and 1 only at its own full scale", () => {
+    expect(glyphLevel(0)).toBe(0);
+    expect(glyphLevel(-1)).toBe(0);
+    expect(glyphLevel(Number.NaN)).toBe(0);
+    expect(glyphLevel(GLYPH_FULL_SCALE)).toBe(1);
+    expect(glyphLevel(1), "clamped, not overflowing the capsule").toBe(1);
+  });
+
+  it("leaves conversational speech mid-scale instead of saturating it", () => {
+    // Measured speech on the wall panel: 0.08..0.48 RMS. Every one of these pins the VAD meter at 100%, which is
+    // what made the glyph a strobe; on the glyph's own axis they all still have somewhere to grow.
+    for (const rms of [0.08, 0.15]) {
+      expect(meterPercent(rms), `${rms} saturates the VAD meter`).toBe(100);
+      expect(glyphLevel(rms), `${rms} must still have somewhere to grow`).toBeLessThan(0.95);
+      expect(glyphLevel(rms)).toBeGreaterThan(0.25);
+    }
+    // A quiet talker at 0.02 is well off the floor rather than a sliver.
+    expect(glyphLevel(0.02)).toBeGreaterThan(0.2);
+    expect(glyphLevel(0.02)).toBeLessThan(0.5);
+  });
+
+  it("is monotone, so louder always draws more", () => {
+    let previous = -1;
+    for (const rms of [0, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.25]) {
+      const level = glyphLevel(rms);
+      expect(level).toBeGreaterThan(previous);
+      previous = level;
+    }
+  });
+
+  it("is a different axis from the meter's, which keeps the threshold range", () => {
+    expect(GLYPH_FULL_SCALE).toBeGreaterThan(METER_FULL_SCALE);
+    expect(meterPercent(0.05), "the slider's top end still fills the bar").toBeCloseTo(83.3, 1);
   });
 });

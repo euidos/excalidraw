@@ -3,7 +3,7 @@
  * library and images carry over to this wrapper unchanged (DESIGN gate G6).
  */
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
-import { isRegionMarker } from "./contracts";
+import { isFailedWarning, isRegionMarker } from "./contracts";
 import type {
   AppState,
   BinaryFileData,
@@ -75,7 +75,9 @@ const containerIdOf = (el: ExcalidrawElement): string | null => {
  * A reload during a pending transcription leaves two kinds of litter behind, because the controller that owned
  * them is gone and nothing will ever commit or discard them:
  *
- *   - ghost TEXTS: a placeholder frame ("\u00b7") or a "\u26a0 STT" warning;
+ *   - ghost TEXTS: a placeholder frame ("\u00b7"), or a "\u26a0 STT" warning the app stamped
+ *     (`customData.voiceFailed`, round 4c — a warning is often UNBOUND, and a founder-typed "\u26a0 STT \u2026" must
+ *     survive, so the stamp decides, not the text);
  *   - leftover region MARKERS (`customData.voiceRegion`, round 4a). A committed take deletes its own marker, so a
  *     marker that reached storage is by definition a take that never finished — pending, failed, or whose text the
  *     founder deleted by hand. Markers are scaffolding and are deleted outright; a marker is only kept if a real
@@ -115,8 +117,10 @@ export function sweepGhostPlaceholders<T extends ExcalidrawElement>(elements: re
       continue;
     }
     if (!containerId) {
-      // Free-standing placeholder: an orphan, or the text of a line region, that the controller never replaced.
-      if (PLACEHOLDER_FRAMES.has(content.trim())) {
+      // Free-standing litter: an orphan's placeholder, the text of a line region, or a "⚠ STT" warning that never
+      // had (or has lost) its marker. A warning is only litter when the app STAMPED it (round 4c): deciding by text
+      // content would also eat a founder-typed "⚠ STT …", and every warning this app writes carries the stamp.
+      if (PLACEHOLDER_FRAMES.has(content.trim()) || isFailedWarning(el)) {
         deleted.add(el.id);
       }
       continue;

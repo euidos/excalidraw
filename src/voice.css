@@ -24,6 +24,16 @@ body,
   color: var(--color-on-surface);
 }
 
+/*
+ * The library forces `.ToolIcon__icon svg { width: var(--default-icon-size) }` = 16px, which left the capsule the
+ * code calls the level meter a ~5x9 px area — unreadable from 2-3 m. The 36 px chip has the room for 22.
+ */
+.voice-tool .ToolIcon__icon svg,
+.voice-retry .ToolIcon__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
 /* Armed mirrors the library's `.ToolIcon_type_radio:checked + .ToolIcon__icon` look. */
 .voice-tool--armed .ToolIcon__icon {
   background: var(--color-surface-primary-container);
@@ -62,6 +72,9 @@ body,
   position: absolute;
   left: 50%;
   top: 50%;
+  /* border-box: the 2px border is part of the 22px, so the -11px margin really centres the ring on the glyph
+     (content-box put it 2px down and right, clipping the F9 label and the recording dot at high level). */
+  box-sizing: border-box;
   width: 22px;
   height: 22px;
   margin: -11px 0 0 -11px;
@@ -90,6 +103,19 @@ body,
 
 .voice-tool--speaking .voice-mic__fill {
   opacity: 1;
+}
+
+/*
+ * "Recognised" is a COLOUR state, not a loudness state: multiplying the green by the level meant a quiet or far mic
+ * (the realistic wall case) showed a 0.24-alpha ring and a sliver of fill, i.e. the one signal the founder needs
+ * was invisible exactly when they need it. Floor both, and let the level move what is left.
+ */
+.voice-tool--speaking .voice-tool__ring {
+  opacity: calc(0.7 + 0.3 * var(--voice-level, 0));
+}
+
+.voice-tool--speaking .voice-mic__clip {
+  transform: scaleY(max(0.45, var(--voice-level, 0)));
 }
 
 .voice-tool__badge {
@@ -181,13 +207,21 @@ body,
 
 /* ---- settings panel ---- */
 
-/* Under the top-left main menu, which is where the item that opens it lives (round 4b, founder request 3). */
+/*
+ * Under the top-left main menu, which is where the item that opens it lives (round 4b, founder request 3), but
+ * offset clear of Excalidraw's own left shape-properties island (~16..218 px) so opening the panel never buries it.
+ *
+ * EVERY library variable below carries a literal fallback: the panel is rendered OUTSIDE the `.excalidraw` subtree
+ * (App.tsx renders it as a sibling of <Excalidraw/>), where `--color-*` resolve to nothing — which made the level
+ * bar draw nothing at 100%, the buttons white-on-transparent and the input borders disappear entirely, since
+ * `border: 1px solid var(--color-primary)` is invalid at computed-value time and falls back to border-style none.
+ */
 .voice-settings {
   position: fixed;
   top: 84px;
-  left: 16px;
+  left: 232px;
   z-index: 100;
-  width: calc(100vw - 32px);
+  width: calc(100vw - 248px);
   max-width: 360px;
   box-sizing: border-box;
   padding: 12px;
@@ -216,9 +250,10 @@ body,
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 14px;
+  /* A ~22px hit area: on the wall panel this is a stylus target, not a mouse target. */
+  font-size: 18px;
   line-height: 1;
-  padding: 4px;
+  padding: 2px 8px;
 }
 
 .voice-settings__row {
@@ -233,7 +268,7 @@ body,
   width: 100%;
   box-sizing: border-box;
   padding: 5px 7px;
-  border: 1px solid var(--color-primary);
+  border: 1px solid var(--color-primary, #6965db);
   border-radius: 6px;
   background: transparent;
   color: inherit;
@@ -251,7 +286,7 @@ body,
   padding: 5px 10px;
   border: none;
   border-radius: 6px;
-  background: var(--color-primary);
+  background: var(--color-primary, #6965db);
   color: #fff;
   font-size: 13px;
   cursor: pointer;
@@ -298,7 +333,7 @@ body,
   height: 100%;
   width: 0;
   border-radius: 5px;
-  background: var(--color-primary);
+  background: var(--color-primary, #6965db);
   transition: width 60ms linear;
 }
 
@@ -324,7 +359,7 @@ body,
   padding: 0;
   border: none;
   background: transparent;
-  accent-color: var(--color-primary);
+  accent-color: var(--color-primary, #6965db);
 }
 
 .voice-settings__slider output {
@@ -336,7 +371,7 @@ body,
 .voice-settings__row--check input[type="checkbox"] {
   width: auto;
   justify-self: start;
-  accent-color: var(--color-primary);
+  accent-color: var(--color-primary, #6965db);
 }
 
 .voice-settings__help {

@@ -39,7 +39,12 @@ const marker = (id: string, extra: { boundElements?: Bound[] | null; type?: stri
 const text = (
   id: string,
   content: string,
-  extra: { containerId?: string | null; isDeleted?: boolean } = {},
+  extra: {
+    containerId?: string | null;
+    isDeleted?: boolean;
+    /** fit.ts stamps a "⚠ STT" warning with `voiceFailed`; a commit clears it again. */
+    customData?: Record<string, unknown>;
+  } = {},
 ) =>
   ({
     id,
@@ -98,6 +103,13 @@ describe("sweepGhostPlaceholders", () => {
     const out = sweepGhostPlaceholders([text("t1", "·"), text("t2", "···")]);
     expect(byId(out, "t1").isDeleted).toBe(true);
     expect(byId(out, "t2").isDeleted).toBe(true);
+  });
+
+  it("deletes a free-standing warning the app STAMPED (a failed line region, or a marker-less retry)", () => {
+    const out = sweepGhostPlaceholders([
+      text("t1", "⚠ STT", { customData: { voiceFailed: true } }),
+    ]);
+    expect(byId(out, "t1").isDeleted, "nothing could ever retry into it: the audio died with the page").toBe(true);
   });
 
   it("leaves real text, real shapes and free-standing STT warnings untouched", () => {

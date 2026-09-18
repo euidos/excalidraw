@@ -58,6 +58,15 @@ const MAX_ATTEMPTS = 3;
 const TAP_MIN_SCREEN_PX = 12;
 const VERTICAL_LINE_AREA_SCREEN_PX = 80;
 
+/**
+ * Is this text still scaffolding (an animation frame, an empty string or an earlier warning), i.e. may a failure
+ * overwrite it? Words that have landed are the only copy the founder has, so nothing may write over them.
+ */
+const isScaffoldText = (text: string): boolean => {
+  const t = text.trim();
+  return t === "" || /^\u00b7{1,3}$/.test(t) || t.startsWith(FAILED_TEXT);
+};
+
 const NATIVE_TOOL_SET: ReadonlySet<string> = new Set<string>(NATIVE_CONTAINER_TOOLS);
 const isNativeContainerTool = (type: string): boolean => NATIVE_TOOL_SET.has(type);
 
@@ -459,10 +468,19 @@ export const createVoiceController: CreateVoiceController = ({
         CaptureUpdateAction.IMMEDIATELY,
       );
     } else {
-      applyElements(
-        fit.commitText(entry.target, found.text, combined, entry.style, found.marker, fitOptions()),
-        CaptureUpdateAction.IMMEDIATELY,
+      const built = fit.commitText(
+        entry.target, found.text, combined, entry.style, found.marker, fitOptions(),
       );
+      // The WORDS are the founder's edit and must be undoable; the marker's removal is scaffolding the app put
+      // there, so it is applied with NEVER. Otherwise one Ctrl+Z after a commit brings the dashed box back as a
+      // live, ownerless region (nothing would ever discard it again) — exactly the shape request 1 asked to make
+      // disappear. Two updates, same tick, same order: words first, then the scaffolding leaves.
+      const scaffolding = built.filter(
+        (el) => el.id === entry.target.markerId && el.id !== entry.target.textId,
+      );
+      const words = built.filter((el) => !scaffolding.includes(el));
+      applyElements(words, CaptureUpdateAction.IMMEDIATELY);
+      applyElements(scaffolding, CaptureUpdateAction.NEVER);
     }
     entry.failed = false;
     completed += 1;
@@ -492,6 +510,11 @@ export const createVoiceController: CreateVoiceController = ({
       return;
     }
     if (entry.orphan) {
+      // Same rule as fit.markFailed: a later failure never overwrites words that already landed (they are the only
+      // copy on the canvas). `status.failed` + the retry button are the report in that case.
+      if (!isScaffoldText(String(found.text.text ?? ""))) {
+        return;
+      }
       applyElements(
         [
           newElementWith(found.text, {
@@ -510,26 +533,48 @@ export const createVoiceController: CreateVoiceController = ({
     }
   };
 
-  /** No speech ever landed here: the marker and the placeholder both go, so the canvas is as it was. */
-  const discardTarget = (entry: TargetEntry): void => {
+  /**
+   * An orphan whose utterance produced nothing: the free text the app created for it goes. Nothing the founder drew
+   * is involved and its drop was already toasted with the text that was filtered, so this one is silent.
+   */
+  const discardOrphan = (entry: TargetEntry): void => {
     const found = findTarget(entry.target);
     if (!found) {
       return;
     }
-    if (!entry.orphan) {
-      // The region marker goes with the placeholder, so nothing at all is left where the founder drew: the toast
-      // is then the ONLY trace of the take, and without it a silent room and a mic that heard nothing of what they
-      // said look identical. An orphan is skipped — there is no "that shape", and its own drop was toasted with
-      // the text that was filtered.
-      toast(NO_SPEECH_TOAST, DROP_TOAST_MS);
+    applyElements([newElementWith(found.text, { isDeleted: true })], CaptureUpdateAction.IMMEDIATELY);
+  };
+
+  /**
+   * Regions nothing was ever said into, swept at the END of the session — never mid-session (round 4c).
+   *
+   * Round 4a made "no words landed here" destructive (the marker goes with the placeholder), and `isSuperseded`
+   * closes an earlier region the moment a later stroke takes the open speech away. Together those deleted every box
+   * the founder drew before they got round to narrating it, while the tool was latched, with a toast as the only
+   * trace. A region the founder drew is THEIRS until the take is over: it stays on the canvas, closed, and the
+   * disarm removes the leftovers in ONE undoable update that says how many.
+   */
+  const discardUnspoken = (owner: Session, entries: readonly TargetEntry[]): void => {
+    const updates: ExcalidrawElement[] = [];
+    let regions = 0;
+    for (const entry of entries) {
+      const found = findTarget(entry.target);
+      forgetStroke(owner, entry.target.textId);
+      if (!found) {
+        continue;
+      }
+      regions += 1;
+      updates.push(...fit.discard(entry.target, found.marker, found.text, entry.style));
     }
-    if (entry.orphan) {
-      applyElements([newElementWith(found.text, { isDeleted: true })], CaptureUpdateAction.IMMEDIATELY);
+    if (updates.length === 0) {
       return;
     }
-    applyElements(
-      fit.discard(entry.target, found.marker, found.text, entry.style),
-      CaptureUpdateAction.IMMEDIATELY,
+    applyElements(updates, CaptureUpdateAction.IMMEDIATELY);
+    // Without a toast a silent room and a mic that heard nothing of what was said look identical, and after round 4a
+    // there is nothing left on the canvas to point at either.
+    toast(
+      regions === 1 ? NO_SPEECH_TOAST : `${regions} regions removed \u2014 nothing was said`,
+      DROP_TOAST_MS,
     );
   };
 
@@ -562,31 +607,40 @@ export const createVoiceController: CreateVoiceController = ({
         openOnsets.push(u.onsetMs);
       }
     }
+    /** Closed regions with nothing in them, swept together once the session is over. */
+    const unspoken: TargetEntry[] = [];
     for (const entry of [...owner.targets.values()]) {
-      if (entry.closed) {
-        continue;
-      }
       const textId = entry.target.textId;
-      const own = owner.strokes.find((s) => s.id === textId);
-      const superseded =
-        // An orphan has no stroke of its own: it is done as soon as its utterance is.
-        entry.orphan ||
-        (own !== undefined && isSuperseded(own.downMs, owner.strokes, openOnsets, preRollMs));
-      if (!owner.ended && !superseded) {
-        continue;
+      if (!entry.closed) {
+        const own = owner.strokes.find((s) => s.id === textId);
+        const superseded =
+          // An orphan has no stroke of its own: it is done as soon as its utterance is.
+          entry.orphan ||
+          (own !== undefined && isSuperseded(own.downMs, owner.strokes, openOnsets, preRollMs));
+        if (!owner.ended && !superseded) {
+          continue;
+        }
+        // Orphan utterances carry assigned === null, so they are matched by the free text they created.
+        const mine = [...owner.utterances.values()].filter(
+          (u) => u.assigned === textId || u.orphanTextId === textId,
+        );
+        if (!mine.every((u) => u.resolved)) {
+          continue;
+        }
+        entry.closed = true;
+        if (entry.orphan && entry.parts.length === 0 && !entry.failed) {
+          discardOrphan(entry);
+          forgetStroke(owner, textId);
+          continue;
+        }
       }
-      // Orphan utterances carry assigned === null, so they are matched by the free text they created.
-      const mine = [...owner.utterances.values()].filter(
-        (u) => u.assigned === textId || u.orphanTextId === textId,
-      );
-      if (!mine.every((u) => u.resolved)) {
-        continue;
+      // A region the founder drew and never spoke into stays exactly where they drew it until the take is over.
+      if (owner.ended && entry.parts.length === 0 && !entry.failed && !entry.orphan) {
+        unspoken.push(entry);
       }
-      entry.closed = true;
-      if (entry.parts.length === 0 && !entry.failed) {
-        discardTarget(entry);
-        forgetStroke(owner, textId);
-      }
+    }
+    if (unspoken.length > 0) {
+      discardUnspoken(owner, unspoken);
     }
     // Drop sessions with nothing left to animate or assign (failed entries keep their own references).
     if (
@@ -760,7 +814,14 @@ export const createVoiceController: CreateVoiceController = ({
   const runAssignment = (owner: Session): void => {
     try {
       // A queued conversion still owes us its stroke; its own runAssignment call re-runs this.
-      if (!owner.ended && owner.conversions > 0) {
+      //
+      // So does a pen that is still DOWN (gate N2e): a stroke only enters `owner.strokes` inside convertStroke,
+      // which the pointer-UP queues, so finalising an assignment while the founder is still drawing measures it
+      // against a stroke list that is missing the very region being drawn — the words orphaned somewhere else and
+      // (since round 4a) the box was deleted with a "nothing was heard" toast. The flush barrier therefore covers
+      // the consumer as well: onPointerUp increments `conversions` and convertStroke's `finally` re-runs this, and
+      // a disarm clears `currentStroke` before it sets `ended`, so nothing can wait for a pen that is gone.
+      if (!owner.ended && (owner.conversions > 0 || currentStroke?.session === owner)) {
         return;
       }
       const preRollMs = getSettings().preRollMs;
@@ -1067,6 +1128,17 @@ export const createVoiceController: CreateVoiceController = ({
       if (active.type !== "freedraw" && !isNativeContainerTool(active.type)) {
         previousTool = active;
         api.setActiveTool({ type: "freedraw" });
+      }
+      // Text metrics ARE font metrics: a transcript fitted before the webfont arrived is fitted against fallback
+      // metrics and comes out a size or two off — and since round 4a there is no box left around it to hide that.
+      // Arming is the last moment that can afford to wait, and it already waits for the microphone.
+      try {
+        await fit.warmFonts(style.fontFamily);
+      } catch (err) {
+        console.warn("[voice] font warm-up failed", err);
+      }
+      if (disposed) {
+        return;
       }
       micDetail = undefined;
       try {

@@ -399,6 +399,8 @@ interface GlyphWatch {
   peakLevel: number;
   sawSpeaking: boolean;
   samples: number;
+  /** Every level the glyph was drawn at, so a gate can ask whether it REACTED or just toggled (round 4c). */
+  levels: number[];
 }
 
 /**
@@ -413,7 +415,7 @@ export async function watchMicGlyph(page: Page): Promise<void> {
     if (!el) {
       throw new Error("voice button not in the DOM");
     }
-    const watch: GlyphWatch = { peakLevel: 0, sawSpeaking: false, samples: 0 };
+    const watch: GlyphWatch = { peakLevel: 0, sawSpeaking: false, samples: 0, levels: [] };
     const w = window as unknown as { __glyphWatch: GlyphWatch; __glyphWatchStop?: () => void };
     w.__glyphWatch = watch;
     const timer = setInterval(() => {
@@ -421,6 +423,9 @@ export async function watchMicGlyph(page: Page): Promise<void> {
       const raw = Number.parseFloat(el.style.getPropertyValue("--voice-level"));
       if (Number.isFinite(raw)) {
         watch.peakLevel = Math.max(watch.peakLevel, raw);
+        if (watch.levels.length < 1000) {
+          watch.levels.push(raw);
+        }
       }
       if (el.classList.contains("voice-tool--speaking")) {
         watch.sawSpeaking = true;
@@ -435,7 +440,7 @@ export const readMicGlyphWatch = (page: Page): Promise<GlyphWatch> =>
   page.evaluate(() => {
     const w = window as unknown as { __glyphWatch?: GlyphWatch; __glyphWatchStop?: () => void };
     w.__glyphWatchStop?.();
-    return w.__glyphWatch ?? { peakLevel: 0, sawSpeaking: false, samples: 0 };
+    return w.__glyphWatch ?? { peakLevel: 0, sawSpeaking: false, samples: 0, levels: [] };
   });
 
 export async function evidence(page: Page, name: string): Promise<string> {

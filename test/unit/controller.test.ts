@@ -170,6 +170,7 @@ const fakeFit = (): FitModule => {
       { ...text, isDeleted: true } as ExcalidrawTextElement,
       ...(marker ? [{ ...marker, isDeleted: true } as ExcalidrawElement] : []),
     ],
+    warmFonts: async () => undefined,
     buildFreeText: (at: Point, transcript: string) => {
       seq += 1;
       return el({
@@ -233,6 +234,10 @@ interface Harness {
   controller: VoiceController;
   status: () => VoiceStatus;
   stroke: (id: string) => Promise<void>;
+  /** Pen down only: the stroke stays open, which is what gate N2e needs (the deadline passes mid-stroke). */
+  strokeDown: (id: string) => void;
+  /** Pen up for the stroke `strokeDown` opened, resolved once the conversion has produced its region. */
+  strokeUp: (id: string) => Promise<void>;
 }
 
 function harness(patch: Partial<VoiceSettings> = {}, transcribe: Transcribe = async () => ({
@@ -251,18 +256,30 @@ function harness(patch: Partial<VoiceSettings> = {}, transcribe: Transcribe = as
     getSettings: () => settings(patch),
     onStatus: () => undefined,
   });
-  /** One whole pen stroke: the library inserts the element before pointerdown and finalises it after pointerup. */
-  const stroke = async (id: string): Promise<void> => {
+  /** The library inserts the element into the scene before onPointerDown fires. */
+  const strokeDown = (id: string): void => {
     const ink = el({ id, type: "freedraw", points: [[0, 0], [100, 0], [100, 60], [0, 60]] });
     api.elements.push(ink);
     api.appState.newElement = ink;
     api.down?.({ type: "freedraw" }, { origin: { x: 10, y: 10 } });
+  };
+  /** Counts markers including the deleted ones: a take can commit (and delete its marker) before the poll runs. */
+  const markerCount = (): number => api.elements.filter((e) => e.type === "rectangle").length;
+  const strokeUp = async (id: string): Promise<void> => {
+    void id;
+    const before = markerCount();
     api.up?.();
     api.appState.newElement = null;
-    // convertStroke waits a tick plus a frame for the library to finalise the element.
-    await until(() => api.elements.some((e) => e.type === "rectangle" && !e.isDeleted && e.id !== id));
+    // convertStroke waits a tick plus a frame for the library to finalise the element; count, so a second stroke
+    // does not resolve on the FIRST stroke's marker.
+    await until(() => markerCount() > before);
   };
-  return { api, capture, controller, status: () => controller.getStatus(), stroke };
+  /** One whole pen stroke: down, up, region. */
+  const stroke = async (id: string): Promise<void> => {
+    strokeDown(id);
+    await strokeUp(id);
+  };
+  return { api, capture, controller, status: () => controller.getStatus(), stroke, strokeDown, strokeUp };
 }
 
 let live: VoiceController | null = null;
@@ -503,5 +520,135 @@ describe("a failed entry whose shape has left the scene is pruned", () => {
 
     expect(h.status().failed, "nothing left to retry, so nothing left to show").toBe(0);
     expect(h.status().pending, "and no request was sent into the void").toBe(0);
+  });
+});
+
+describe("gate N2e — a stroke that is still under the pen when the deadline passes", () => {
+  /**
+   * The defect this pins was destructive: speech, then a careful stroke that is still being drawn when the
+   * utterance's pre-roll deadline expires. The stroke record is only created by convertStroke (which the pointer-UP
+   * queues), so the assignment used to be finalised against a stroke list that did not contain the region the
+   * founder was drawing for those very words: they orphaned at the pen origin AND the box was deleted with a
+   * "No speech heard for that shape" toast. Unreachable from the e2e — the slowest stroke there is ~0.4 s of
+   * pen-down against a 1.5 s pre-roll — so the barrier is gated here.
+   */
+  it("waits for the pen, then writes the words into the region being drawn", async () => {
+    const h = harness({ preRollMs: 200 });
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // The label is spoken first; the pen goes down inside its pre-roll window (1000 + 200) and is STILL DOWN when
+    // both the utterance and the window have ended, which is the whole race.
+    h.capture.clock = 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1000 });
+    h.capture.clock = 1150;
+    h.strokeDown("ink-a");
+    h.capture.clock = 1600;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1000, endMs: 1500 });
+    // The deadline is long past (1200) and its final timer has fired, with the pen still on the panel.
+    await wait(60);
+    expect(h.status().orphans, "nothing is finalised while a stroke is open").toBe(0);
+    expect(h.status().completed).toBe(0);
+
+    await h.strokeUp("ink-a");
+    await until(() => h.status().completed === 1, 3000);
+
+    const marker = h.api.elements.find((e) => e.type === "rectangle" && e.customData?.voiceRegion === true)!;
+    const committed = h.api.elements.find((e) => !e.isDeleted && e.text === SENTENCE)!;
+    expect(committed, "the words landed").toBeTruthy();
+    expect(committed.containerId ?? null, "as free text, the marker having been removed").toBeNull();
+    expect(h.status().orphans, "and not as an orphan at the pen origin").toBe(0);
+    expect(marker.isDeleted, "the marker left with its transcript, which is the only reason it may go").toBe(true);
+    expect(
+      h.api.toasts.some((t) => t.message === "No speech heard for that shape"),
+      "nothing was ever discarded, so nothing said the founder was not heard",
+    ).toBe(false);
+  });
+});
+
+describe("a region the founder drew and never spoke into", () => {
+  it("survives on the canvas while the tool stays latched, and only the disarm removes it", async () => {
+    const h = harness({ preRollMs: 200 });
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    const markerA = h.api.elements.find((e) => e.type === "rectangle")!.id;
+    h.capture.clock = 2000;
+    await h.stroke("ink-b");
+
+    // One label, spoken late: assign.ts gives it to stroke B, which supersedes A for good.
+    h.capture.clock = 4000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 4000 });
+    h.capture.clock = 4700;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 4000, endMs: 4700 });
+    await until(() => h.status().completed === 1, 3000);
+
+    expect(h.api.find(markerA)!.isDeleted, "the box drawn before the label is still the founder's").toBe(false);
+    expect(
+      h.api.toasts.some((t) => t.message === "No speech heard for that shape"),
+      "and nothing claimed it was removed",
+    ).toBe(false);
+
+    h.controller.toggleLatch();
+    await until(() => h.api.find(markerA)!.isDeleted, 3000);
+    expect(h.api.toasts.at(-1)!.message, "the sweep says so once, at the end of the take").toBe(
+      "No speech heard for that shape",
+    );
+  });
+
+  it("sweeps several at once with a toast that counts them", async () => {
+    const h = harness();
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    h.capture.clock = 1000;
+    await h.stroke("ink-a");
+    h.capture.clock = 2000;
+    await h.stroke("ink-b");
+    h.capture.clock = 3000;
+    await h.stroke("ink-c");
+    const markers = h.api.elements.filter((e) => e.customData?.voiceRegion === true).map((e) => e.id);
+    expect(markers, "three regions, nothing said").toHaveLength(3);
+
+    h.controller.toggleLatch();
+    await until(() => markers.every((id) => h.api.find(id)!.isDeleted), 3000);
+    expect(h.api.toasts.at(-1)!.message).toBe("3 regions removed \u2014 nothing was said");
+  });
+});
+
+describe("a failure never overwrites words that already landed", () => {
+  it("leaves an orphan's transcript alone when a later take into it fails", async () => {
+    let calls = 0;
+    const h = harness({}, async () => {
+      calls += 1;
+      if (calls === 1) return { text: SENTENCE, latencyMs: 1 };
+      await wait(10);
+      throw new Error("STT server unreachable");
+    });
+    live = h.controller;
+    h.controller.toggleLatch();
+    await until(() => h.capture.active);
+
+    // No stroke at all: both utterances land in the same orphan free text.
+    h.capture.clock = 1000;
+    h.capture.onUtteranceStart?.({ id: 1, onsetMs: 1000 });
+    h.capture.clock = 4000;
+    h.capture.onUtteranceEnd?.({ id: 1, onsetMs: 1000, endMs: 2000 });
+    await until(() => h.status().completed === 1, 3000);
+    const written = h.api.elements.find((e) => !e.isDeleted && e.text === SENTENCE)!;
+
+    h.capture.clock = 5000;
+    h.capture.onUtteranceStart?.({ id: 2, onsetMs: 5000 });
+    h.capture.clock = 8000;
+    h.capture.onUtteranceEnd?.({ id: 2, onsetMs: 5000, endMs: 6000 });
+    await until(() => h.status().failed === 1, 3000);
+
+    expect(h.api.find(written.id)!.text, "the words are the only copy there is").toBe(SENTENCE);
+    expect(h.status().failed, "the failure is reported by the retry button instead").toBe(1);
   });
 });

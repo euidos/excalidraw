@@ -95,6 +95,11 @@ export default function App() {
       }
     };
 
+    // Fonts before anything is measured: fit.ts only learns the real text metrics once the webfont has loaded, so a
+    // kiosk that boots and is spoken into straight away would otherwise fit its first transcript against the
+    // fallback font. Idempotent and cached — the controller awaits the same promise before it arms.
+    void fit.warmFonts(api.getAppState().currentItemFontFamily);
+
     const controller = createVoiceController({
       api,
       capture,
@@ -125,7 +130,6 @@ export default function App() {
         toolbarRef.current = mountVoiceToolbarButton(root, {
           onToggle: () => controller.toggleLatch(),
           onRetry: () => controller.retryFailed(),
-          onOpenSettings: () => setPanelOpen(true),
         });
         toolbarRef.current.update(controller.getStatus());
         return;

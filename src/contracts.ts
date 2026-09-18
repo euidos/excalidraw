@@ -65,6 +65,19 @@ export const isRegionMarker = (
   el: { customData?: Record<string, unknown> } | null | undefined,
 ): boolean => el?.customData?.voiceRegion === true;
 
+/**
+ * The stamp a "⚠ STT" warning text carries while a take is failed. Litter is decided by this stamp, never by
+ * reading the text content (round 4c): a failed line region and a failed retry into a region whose marker an
+ * earlier commit removed both leave an UNBOUND warning, which the sweep could otherwise not tell apart from a
+ * founder-typed "⚠ STT …". A commit clears the stamp in the same update that writes the words, so a reload never
+ * sweeps a landed transcript.
+ */
+export const VOICE_FAILED_CUSTOM_DATA: { voiceFailed: true } = { voiceFailed: true };
+/** True for the "⚠ STT" text of a take that failed and was never recovered. */
+export const isFailedWarning = (
+  el: { customData?: Record<string, unknown> } | null | undefined,
+): boolean => el?.customData?.voiceFailed === true;
+
 /** Ids the controller needs to find its elements again later (never hold element objects across frames). */
 export interface VoiceTarget {
   /**
@@ -105,9 +118,16 @@ export type PlaceholderResult = { elements: ExcalidrawElement[]; target: VoiceTa
  * angle (never upside down), on the line's upper side. Returns [text] — plus the marker marked deleted when one
  * was passed in, in the SAME update, so nothing but the text is ever visible after a commit.
  *
- * markFailed: text becomes "⚠ STT" in red (#c92a2a) at a small size, inside the region; the marker (if any) stays
- * dashed so the retry has a visible target. A successful retry goes through commitText and the marker vanishes.
+ * markFailed: text becomes "⚠ STT" in red (#c92a2a) at a small size, inside the region, stamped with
+ * VOICE_FAILED_CUSTOM_DATA so a reload can sweep it; the marker (if any) stays dashed so the retry has a visible
+ * target. A successful retry goes through commitText, which clears the stamp and removes the marker. A take that
+ * fails into a region whose text already carries LANDED WORDS returns [] instead: a later failure may never
+ * destroy a transcript that is already on the canvas (the toast and the retry button report it instead).
  * discard: nothing landed here — both the text and the marker are marked deleted.
+ *
+ * warmFonts: resolves once the fonts every measurement depends on are loaded — one throwaway measurement (which is
+ * what makes the library register the webfont at all) and then `document.fonts.ready`. Idempotent and cached: the
+ * controller awaits it before it arms, so no transcript is ever fitted against fallback metrics.
  */
 export interface FitModule {
   buildPlaceholder(shape: StrokeShape, style: StyleSnapshot, opts?: FitOptions): PlaceholderResult;
@@ -133,6 +153,7 @@ export interface FitModule {
     text: ExcalidrawTextElement,
     style: StyleSnapshot,
   ): ExcalidrawElement[];
+  warmFonts(fontFamily?: number): Promise<void>;
   /** Plain text at a point (no region): used when speech arrives without a stroke. */
   buildFreeText(at: Point, transcript: string, style: StyleSnapshot, fontSize: number): ExcalidrawTextElement;
 }
@@ -256,7 +277,6 @@ export interface ToolbarHandle { update(status: VoiceStatus): void; unmount(): v
 export interface ToolbarOptions {
   onToggle: () => void;
   onRetry: () => void;
-  onOpenSettings: () => void;
 }
 export type MountVoiceToolbarButton = (excalidrawRoot: HTMLElement, opts: ToolbarOptions) => ToolbarHandle;
 

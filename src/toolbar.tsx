@@ -5,13 +5,13 @@
  *
  * Round 2 (R6): a tap of ANY duration toggles the latch. The long-press / contextmenu path to settings is gone —
  * on the IR frame a "tap" is routinely 700 ms+, so long-press stole the founder's latch taps and opened settings
- * instead. Settings live in Excalidraw's own top-left main menu (round 4b, App.tsx); `opts.onOpenSettings` stays in
- * the contract but no gesture on this button is wired to it.
+ * instead. Settings live in Excalidraw's own top-left main menu (round 4b, App.tsx), so this button has no
+ * settings gesture and `ToolbarOptions` no longer carries a hook for one (round 4c).
  *
  * Round 4b: the glyph itself is the level meter — see MIC_SVG and buttonVisualState.
  */
 import type { MountVoiceToolbarButton, ToolbarHandle, ToolbarOptions, VoiceStatus } from "./contracts";
-import { meterPercent } from "./level";
+import { glyphLevel } from "./level";
 
 /** A press that travels further than this (CSS px) is a drag/palm smear, not a tap. */
 const TAP_SLOP_PX = 24;
@@ -86,7 +86,9 @@ export function buttonVisualState(status: VoiceStatus): ToolbarVisualState {
       "voice-tool--mic-missing":
         status.mic === "denied" || status.mic === "missing" || status.mic === "error",
     },
-    level: armed ? meterPercent(status.level) / 100 : 0,
+    // The glyph's own display curve (level.ts `glyphLevel`): the settings meter keeps the VAD-threshold axis, whose
+    // 0.06 full scale pinned the capsule at 100% for anything louder than a whisper.
+    level: armed ? glyphLevel(status.level) : 0,
   };
 }
 

@@ -1,10 +1,11 @@
 # excalidraw-voice
 
-A wrapper around `@excalidraw/excalidraw` that adds one tool: **voice area**. Arm it, then draw and talk. Each
-stroke becomes a real Excalidraw shape — a box, an oval or a line — holding an animated placeholder, and the
-speech that belongs to that stroke is sent to the local speech-to-text server and fitted into the shape at the
-largest font size that still fits. Strokes never wait for transcripts: several can be in flight at once and
-results land by element id in whatever order they arrive.
+A wrapper around `@excalidraw/excalidraw` that adds one tool: **voice area**. Arm it, then draw and talk. A stroke
+**selects a region** — it is not a drawing: while the transcript is on its way the region is faint dashed
+scaffolding (a bounding box, or the line itself) with an animated placeholder inside it, and when the words land the
+scaffolding is deleted, leaving the transcript alone on the canvas at the largest font size that fits the region you
+drew. Strokes never wait for transcripts: several can be in flight at once and results land by element id in
+whatever order they arrive.
 
 **Repo:** local-only git repo on **dev-woo** at `/root/dev_workspaces/excalidraw-voice`. No remote, nothing to
 clone from a forge: get onto dev-woo (`ssh dev-woo`, key-based root over the tailnet) and work there. Private,
@@ -46,33 +47,37 @@ npm install     # dependencies + the Playwright browser download used by npm run
    **"Voice area"** and `data-testid` is `toolbar-voice`. The circular-arrow **retry** button appears
    immediately to its right — but only once at least one transcription has failed; with nothing failed it is
    hidden, so an unarmed, healthy board shows the mic alone.
-2. **Draw while you speak.** A rough oval or box becomes an area with the text fitted inside it; a roughly
-   horizontal stroke becomes a line with the text sitting along it (underline-style); a near-vertical stroke
-   becomes an area. A tap does nothing.
+2. **Draw while you speak.** A rough oval or box selects a rectangular region and the text is fitted inside it; a
+   roughly horizontal stroke selects a line and the text sits along it (underline-style); a near-vertical stroke
+   selects a region too. A tap does nothing.
 3. **Keep going.** Draw the next shape and keep talking — nothing waits. A badge on the mic button counts what is
    still pending.
 4. **Speak without drawing** and the words land as plain text where you last touched the board.
-5. **Exact shapes:** pick a native tool first (rectangle, ellipse, diamond, line), then arm. The shape you draw
-   with that tool is used as the container as-is, so you get exact geometry instead of a recognised freehand one.
-   Otherwise the tool switches to freedraw for the hold and switches back afterwards.
-6. **Placeholder states:** dashed outline + "·/··/···" means the transcript is on its way; **⚠ STT** in red means
-   the server did not answer — the retry button (the circular arrow that appears next to the mic only when
-   something has failed) re-sends everything that failed (the audio is kept in memory until the page reloads).
-   If you said nothing, the shape is kept, the placeholder disappears and a toast says **"No speech heard for
-   that shape"** — a drop leaves no ⚠ and no retry, so the toast is how you tell it from a shape still waiting.
-   Delete a shape while it is pending and its transcript is dropped silently. If a reload catches a pending
-   placeholder, the next boot sweeps those ghosts back to plain shapes.
+5. **Exact regions:** pick a native tool first (rectangle, ellipse, diamond, line), then arm. The shape you draw
+   with that tool becomes the region marker as-is, so you get exact geometry instead of a recognised freehand one —
+   and, like any marker, it disappears when the words land. Otherwise the tool switches to freedraw for the hold and
+   switches back afterwards.
+6. **Region states:** a faint dashed marker + "·/··/···" means the transcript is on its way; when it arrives the
+   marker is deleted and only the words remain. **⚠ STT** in red means the server did not answer — that one KEEPS
+   its dashed marker so the retry button (the circular arrow that appears next to the mic only when something has
+   failed) has a visible target; it re-sends everything that failed (the audio is kept in memory until the page
+   reloads), and a failure never overwrites words that already landed. If you said nothing, the marker and the
+   placeholder both go when you disarm and a toast says **"No speech heard for that shape"** (or "N regions removed
+   — nothing was said") — a drop leaves no ⚠ and no retry, so the toast is how you tell it from a region still
+   waiting. Regions you draw are never removed mid-take, so you can lay out several boxes before you start talking.
+   Delete a shape while it is pending and its transcript is dropped silently. If a reload catches a pending take,
+   the next boot sweeps the leftover markers, placeholders and stranded ⚠ warnings away.
 
-### How the words find their shape
+### How the words find their region
 
 The microphone runs continuously while armed and the app cuts it at **silence**, not at your strokes: one speech
-burst bounded by silence is one *utterance*. An utterance goes to the latest shape whose pen-down happened no
+burst bounded by silence is one *utterance*. An utterance goes to the latest region whose pen-down happened no
 later than **1.5 s after the utterance started** (the pre-roll), so saying the label a beat *before* you draw the
 box still lands it in that box; if you draw first and then talk, it lands there too. Practical consequences for
 the founder: **pause briefly between labels** so the app can tell them apart — run-on speech across two strokes
-is one utterance and goes to one shape; several sentences spoken over one shape all land in it (appended in the
-order spoken, the shape refitted each time); speech that no shape can claim becomes free text where the pen last
-was; palm taps, pans and stray contacts never cut audio, because only silence does. Each utterance is sent as its
+is one utterance and goes to one region; several sentences spoken over one region all land in it (appended in the
+order spoken, the text refitted to the region each time); speech that no region can claim becomes free text where
+the pen last was; palm taps, pans and stray contacts never cut audio, because only silence does. Each utterance is sent as its
 own clip (speech plus 250 ms of padding), so mixed Korean/English talk is detected per utterance instead of one
 language swallowing the other. Bursts shorter than 0.4 s and known near-silence hallucinations ("감사합니다",
 "thanks for watching", "Subtitles by amara.org", …) are dropped rather than written. A drop is never silent: the
@@ -97,7 +102,7 @@ opens settings, because on the IR frame a "tap" is routinely 700 ms and long-pre
 | **VAD threshold** + **level bar** | 0.012 | The loudness floor that counts as speech, as a slider over a live level meter with the threshold marked on the same scale — both are drawn from the raw RMS the capture emits (`src/level.ts`, full scale 0.06), so what you see is what the VAD compares. Talk normally and watch the bar: the marker belongs below your speech and above the room's idle noise. The effective floor is whichever is higher, this value or 3× the measured room noise. |
 | **Warm mic on boot** | on | Acquire the microphone at page load so the first arm records instantly. Turn it off if you do not want the mic light on until you arm (the e2e turns it off to time fixtures). |
 
-### Which stroke becomes which shape
+### Which stroke selects which region
 
 Recognition is pure geometry on the raw stroke points (`src/stroke.ts`). Gesture thresholds are **screen** pixels:
 they are divided by the current zoom at the call site, so the same physical gesture recognises the same at any
@@ -110,13 +115,13 @@ files before trusting a number here or recalibrating one — `grep -n 'Default' 
 set. They are `RecognizeOptions` overrides passed at the call site, not user settings: changing a default means
 editing the contract, which is a design decision, and `test/unit/stroke.test.ts` is what proves the new value.
 
-| Stroke | Test (defaults) | Result |
+| Stroke | Test (defaults) | Region |
 | --- | --- | --- |
 | Tap / tiny flick | bounding-box diagonal < **12 px** | nothing — no shape |
 | Straight-ish, within **60°** of horizontal | every point within **12 %** of the chord length off the line start→end, and the chord ≥ **70 %** of the travelled path | **line**, text along it (a 300 px swipe sloping 20° still counts) |
-| Straight-ish, steeper than **60°** | same straightness test | **rectangle**, widened to at least **80 px** so words fit |
-| Curved or closed, filling ≥ **87 %** of its bounding box | polygon area ÷ bbox area | **rectangle** (a boxy scribble) |
-| Curved or closed, filling < **87 %** | same ratio — a circle fills ~79 % | **ellipse** |
+| Straight-ish, steeper than **60°** | same straightness test | **box**, widened to at least **80 px** so words fit |
+| Curved or closed, filling ≥ **87 %** of its bounding box | polygon area ÷ bbox area | **box** (a boxy scribble) |
+| Curved or closed, filling < **87 %** | same ratio — a circle fills ~79 % | **box** (the oval's bounding box; the outline itself is never kept) |
 
 The 70 % chord/path rule keeps a back-and-forth scribble from reading as a line.
 
@@ -273,8 +278,8 @@ proves attribution. `jfk-dense.wav` and `silence.wav` are generated on first use
      unattended reboot leaves it down until someone logs in. Check `tailscale status | grep desktop-woo` and put
      the current URL into the settings panel.
   4. Down longer: ask the founder — it is their desktop and nobody else can power it on. Meanwhile the app
-     degrades honestly (shapes kept, ⚠ STT placeholders, audio held for retry until reload) and the e2e
-     transcript assertions are meaningless.
+     degrades honestly (a failed take KEEPS its dashed region marker and shows ⚠ STT, audio held for retry until
+     reload) and the e2e transcript assertions are meaningless.
 - **Boxes render but the text is Helvetica.** The bundled fonts are missing from the deploy: `npm run build` runs
   `scripts/copy-fonts.mjs`, which copies the library's `dist/prod/fonts` into `public/fonts`; they must end up at
   `/fonts` on the server, with `window.EXCALIDRAW_ASSET_PATH = "/"` (set in `index.html`).

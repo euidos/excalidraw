@@ -106,10 +106,10 @@ const refit = (
 ): Promise<{ fontSize: number; containerId: string | null; autoResize: boolean }> =>
   page.evaluate(
     async (args: { region: Box; transcript: string; maxFontSize?: number }) => {
-      // Fitting is only comparable against the same loaded fonts; by this point the app has measured at least once,
-      // so awaiting here is what makes "the same region, one step more ceiling" an apples-to-apples question.
-      await document.fonts.ready;
       const voice = window.__excalidrawVoice!;
+      // The APP's own font gate (fit.warmFonts, awaited by App at boot and by the controller before it arms), not a
+      // test-private `document.fonts.ready`: a gate may only assume what production provides.
+      await voice.fit.warmFonts();
       const app = voice.api.getAppState();
       const style = {
         strokeColor: app.currentItemStrokeColor,
@@ -274,7 +274,7 @@ test.describe("voice areas", () => {
       expect(
         markers(during).length + finalTexts(during).length,
         "three regions coexist, some already written",
-      ).toBeGreaterThanOrEqual(3);
+      ).toBe(3);
       expect(
         finalTexts(during).length,
         "an earlier stroke committed while the hold continues",
@@ -385,11 +385,9 @@ test.describe("voice areas", () => {
             fontFamily: 5,
           } as unknown as StyleSnapshot;
           // Text metrics depend on the web font actually being loaded, and the first measurement is what triggers
-          // that load: measure once, wait for the fonts to settle, and only then fit — otherwise the first fit is
-          // made against a fallback font and every later one against Excalifont, which is a difference of two font
-          // sizes in a 240x120 box.
-          voice.fit.buildFreeText({ x: 0, y: 0 }, "font warm up", style, 20);
-          await document.fonts.ready;
+          // that load — which is why the APP has to do this too, and does: App awaits fit.warmFonts() at boot and
+          // the controller awaits it before it arms, so this line is the production path, not a test fixture.
+          await voice.fit.warmFonts();
 
           // 120x80 is the hostile end of the declared region envelope, not the 240x120 the round-1 gate used.
           const run = (transcript: string, width: number, height: number) => {
@@ -887,6 +885,18 @@ test.describe("voice areas", () => {
       expect(heard.samples, "the in-page sampler ran").toBeGreaterThan(20);
       expect(heard.peakLevel, "the mic capsule filled while the clip played").toBeGreaterThan(0);
       expect(heard.sawSpeaking, "the accent came on while an utterance was open").toBe(true);
+      /*
+       * Founder request 2 is "reacts to the volume", not "blinks": on the settings meter's 0.06 axis ordinary speech
+       * pinned --voice-level at 1.00 and only dropped in the gaps between words, so the glyph strobed. The glyph has
+       * its own compressed axis now (level.ts glyphLevel), and this is what tells the two apart.
+       */
+      const partial = new Set(
+        heard.levels.filter((v) => v > 0.02 && v < 0.98).map((v) => v.toFixed(2)),
+      );
+      expect(
+        partial.size,
+        `the capsule tracked the volume rather than toggling (levels: ${heard.levels.slice(0, 40).join(",")})`,
+      ).toBeGreaterThanOrEqual(3);
       await evidence(page, "round4b-glyph-armed");
 
       await button.click();
@@ -961,6 +971,43 @@ test.describe("voice areas", () => {
       await page.keyboard.press("F9");
       await page.waitForTimeout(300);
       expect((await status(page)).mode, "F9 inside a panel field arms nothing").toBe("idle");
+
+      /*
+       * Round 4c: the panel is rendered OUTSIDE the .excalidraw subtree, where the library's `--color-*` variables
+       * resolve to nothing — the level meter drew an empty track at 100%, the buttons were white-on-transparent and
+       * the inputs lost their borders entirely (an invalid `border` shorthand falls back to border-style none). The
+       * wall panel has no console, so "invisible control" is indistinguishable from "broken app": gate the paint.
+       */
+      const painted = await panel.evaluate((el) => {
+        const px = (node: Element | null) => (node ? getComputedStyle(node) : null);
+        const fill = px(el.querySelector(".voice-meter__fill"));
+        const action = px(el.querySelector(".voice-settings__actions button"));
+        const input = px(el.querySelector(".voice-settings__row input"));
+        return {
+          scoped: el.closest(".excalidraw") !== null,
+          meterFill: fill?.backgroundColor ?? "",
+          buttonBackground: action?.backgroundColor ?? "",
+          inputBorder: `${input?.borderStyle ?? ""} ${input?.borderWidth ?? ""}`.trim(),
+        };
+      });
+      expect(painted.meterFill, "the level bar has to be drawn in something").not.toBe("rgba(0, 0, 0, 0)");
+      expect(painted.buttonBackground, "Test STT / Close are white text: they need their chip").not.toBe(
+        "rgba(0, 0, 0, 0)",
+      );
+      expect(painted.inputBorder, "an input with no border is not visibly an input").toBe("solid 1px");
+
+      // Stylus only, no keyboard: a tap on the canvas has to be a way out of the panel.
+      await page.mouse.click(1200, 700);
+      await expect(panel, "a tap outside closes the panel").toBeHidden();
+      await page.locator('[data-testid="main-menu-trigger"]').click();
+      await page.locator('[data-testid="menu-voice-settings"]').click();
+      await expect(panel).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(panel, "and so does Escape, for whoever has a keyboard").toBeHidden();
+      expect(
+        (await elements(page)).length,
+        "and the tap that closed it drew nothing on the board",
+      ).toBe(0);
     } finally {
       await browser.close();
     }

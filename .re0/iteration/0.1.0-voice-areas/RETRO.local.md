@@ -138,7 +138,13 @@ row whose fix is estimated at one contract line or one blocklist entry may not s
 | Nominal-path-only suite | Inverted supersede predicate green in 22/22; lens found it by hand in one session | N9 truth-table / property gate on destructive predicates |
 | Predicate buried in an async handler | `resolveTargets`'s comparison had no callable form until the fix extracted `isSuperseded` | Destructive rules are exported pure functions |
 | Channel without a sink | `dropped`/`lastDropped` in VoiceStatus, nothing renders them | N10 — **closed round 3**: toast at the drop + `dropped N` in the tooltip |
-| Barriered producer, unbarriered consumer | Stroke registered at pointer-up; assignment finalises mid-stroke → orphan | N2e slow-stroke-across-deadline case |
+| Barriered producer, unbarriered consumer | Stroke registered at pointer-up; assignment finalises mid-stroke → orphan | N2e slow-stroke-across-deadline case — **closed round 4c**: `runAssignment` waits for `currentStroke` too, gated in `test/unit/controller.test.ts` |
+| A closing rule wired to a destructive action | Round 4a made "nothing landed here" delete the region, while the rule deciding "nothing can land here any more" (`isSuperseded`) stayed a mid-session predicate: every box drawn before the first spoken label was erased while latched | Round 4c: a region is deleted by a COMMIT or by the DISARM; closing only stops assignment. A destructive action needs its own trigger, never a predicate written for something else |
+| A report written over its own payload | A failed retry wrote "⚠ STT" over a committed transcript whose only other copy was in controller memory: a reload lost the founder's words | Round 4c: `markFailed` returns `[]` when words have landed; failures report through the toast / `status.failed` / the retry button |
+| Litter decided by reading content | The ghost sweep matched the "⚠ STT" TEXT, so it could neither remove an unbound warning the app wrote nor protect one the founder typed | Round 4c: `customData.voiceFailed`, cleared by a commit — same trick as `voiceRegion` |
+| One axis answering two questions | The mic glyph was drawn on the VAD slider's 0.06 axis, where ordinary speech (0.08..0.48 measured) pins at 100%: the "reacts to volume" animation became a strobe | Round 4c: one function per axis in `level.ts` (`meterPercent`, `glyphLevel`), and the e2e asserts the glyph took several DISTINCT partial levels |
+| A surface rendered outside its variable scope | The settings panel lives outside `.excalidraw`, so every `var(--color-*)` resolved to nothing: invisible buttons, a level bar that drew nothing at 100%, borderless inputs — on a panel with no console | Round 4c: literal fallbacks plus an e2e assertion on the COMPUTED paint, not on the class name |
+| A gate that provides its own precondition | The two fit gates awaited `document.fonts.ready` in the page while the app awaited fonts nowhere: green by luck of timing | Round 4c: `fit.warmFonts()` in the app (boot + arm), and the tests call that |
 | Harness setting as a product parameter | N2a passes only at `preRollMs: 0`, which is the defect | Non-default setting → defect or accepted-risk row |
 | Latching failure state | `prepare()` returned cached "error" forever; 500 ms resume verdict never re-checked | N11 — **closed round 3**: enter, clear, re-arm, no reload, no re-acquire |
 | Untriaged builder risk | Two lens blockers were already in builder risk lists | Every risk exits as a row |
@@ -151,8 +157,9 @@ row whose fix is estimated at one contract line or one blocklist entry may not s
 
 - **N9 Destructive predicate** — every discard/delete/refuse/restore rule is a pure exported function with a truth
   table or property gate against the module that owns the rule.
-- **N2e Pre-roll across a live stroke** — default `preRollMs`, speech then a stroke slower than the window →
-  `orphans === 0`, words in that stroke's container. (Currently failing; see L3.)
+- **N2e Pre-roll across a live stroke** — speech then a stroke slower than the pre-roll window → `orphans === 0`,
+  words in that stroke's region, region not deleted. **Closed round 4c** (`test/unit/controller.test.ts`, describe
+  "gate N2e …"); the e2e cannot reach it, which is why it survived two rounds as a browser-only gate.
 - **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy on the panel. **Still open
   and now the only thing standing between the audio graph and "proven": round 3 removed a display gain from the
   capture path and re-measured nothing on the panel.**

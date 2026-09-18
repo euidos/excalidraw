@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { VoiceStatus } from "../../src/contracts";
-import { METER_FULL_SCALE } from "../../src/level";
+import { GLYPH_FULL_SCALE, glyphLevel, METER_FULL_SCALE } from "../../src/level";
 import { buttonTitle, buttonVisualState } from "../../src/toolbar";
 
 const base = (patch: Partial<VoiceStatus> = {}): VoiceStatus => ({
@@ -32,17 +32,21 @@ describe("buttonVisualState — the mic glyph says whether the microphone is hea
   });
 
   it("ignores a stale level once idle (status.level keeps the last RMS after a disarm)", () => {
-    const v = buttonVisualState(base({ mode: "idle", level: METER_FULL_SCALE, speaking: true }));
+    const v = buttonVisualState(base({ mode: "idle", level: GLYPH_FULL_SCALE, speaking: true }));
     expect(v.level).toBe(0);
     expect(v.classes["voice-tool--speaking"]).toBe(false);
   });
 
-  it("fills in proportion to the level while armed, through level.ts's mapping", () => {
-    expect(buttonVisualState(base({ mode: "latched", level: METER_FULL_SCALE / 2 })).level).toBeCloseTo(0.5, 6);
-    expect(buttonVisualState(base({ mode: "holding", level: METER_FULL_SCALE })).level).toBe(1);
+  it("fills through level.ts's GLYPH mapping, not the VAD meter's axis", () => {
+    for (const rms of [0.01, 0.02, 0.08, 0.2]) {
+      expect(buttonVisualState(base({ mode: "latched", level: rms })).level).toBeCloseTo(glyphLevel(rms), 10);
+    }
+    expect(buttonVisualState(base({ mode: "holding", level: GLYPH_FULL_SCALE })).level).toBe(1);
+    // The round-4b defect: on the meter's axis normal speech was already at 1.00 and the capsule stopped moving.
+    expect(buttonVisualState(base({ mode: "latched", level: METER_FULL_SCALE })).level).toBeLessThan(1);
   });
 
-  it("clamps a level louder than the meter's full scale instead of overflowing the capsule", () => {
+  it("clamps a level louder than the glyph's full scale instead of overflowing the capsule", () => {
     expect(buttonVisualState(base({ mode: "latched", level: 1 })).level).toBe(1);
   });
 

@@ -25,6 +25,24 @@ export function meterPercent(rms: number): number {
 }
 
 /**
+ * Full scale of the mic GLYPH in RAW RMS. Measured speech on the wall panel runs 0.08..0.48 peak, i.e. 1.5..8x the
+ * meter's 0.06 axis, so drawing the glyph on that axis pinned it at 100% for whole sentences and the "reacts to
+ * volume" animation read as an on/off strobe at word boundaries.
+ */
+export const GLYPH_FULL_SCALE = 0.25;
+
+/**
+ * RAW RMS → 0..1 for the mic glyph's fill. A DIFFERENT axis from the meter's on purpose, and the only other one:
+ * the meter exists to aim the VAD slider (0.003..0.05), the glyph exists to say "the room is being heard", so it
+ * needs the dynamic range of speech instead. Square-root compressed, because loudness is perceived that way and it
+ * lifts conversational speech (~0.02 RMS) off the floor: 0.02 → 0.28, 0.08 → 0.57, 0.25 and up → 1.
+ */
+export function glyphLevel(rms: number): number {
+  if (!Number.isFinite(rms) || rms <= 0) return 0;
+  return Math.min(1, Math.sqrt(rms / GLYPH_FULL_SCALE));
+}
+
+/**
  * The threshold the VAD actually applies: vad.ts opens an utterance above max(setting, 3 × measured noise floor),
  * so a marker drawn at the setting alone lies in any room louder than a third of it.
  */

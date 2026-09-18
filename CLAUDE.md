@@ -26,19 +26,19 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 | `src/contracts.ts` | — | Types, defaults, JSDoc that defines behaviour. Do not edit to fit an implementation. |
 | `src/contracts-capture.ts` | — | `VoiceCapture`, `AssignUtterance`, the VAD options and the hallucination blocklist. Every declaration here has a live implementation. |
 | `src/stroke.ts` | `RecognizeStroke` | Pure geometry: points → line / rectangle / ellipse / null. No DOM, unit-tested. Thresholds are the `RecognizeOptions` JSDoc defaults in `contracts.ts` plus `MIN_CHORD_PATH_RATIO` here — the source of truth the README only copies. |
-| `src/fit.ts` | `FitModule` | Builds region markers (dashed, stamped `customData.voiceRegion`, a rectangle on the stroke's bounding box for areas) with an animated placeholder, and fits transcripts by binary-searching the largest font size that leaves a throwaway probe container unchanged, measured through the library's own `convertToExcalidrawElements` → `redrawTextBoundingBox`. The commit copies that probe's layout onto a FREE text (containerId null, autoResize false at the fitted width) and marks the marker deleted in the same update. Line text wraps at the line-min floor instead of shrinking. |
+| `src/fit.ts` | `FitModule` | Builds region markers (dashed, stamped `customData.voiceRegion`, a rectangle on the stroke's bounding box for areas — one probe shape for placeholder and commit alike) with an animated placeholder, and fits transcripts by binary-searching the largest font size that leaves a throwaway probe container unchanged, measured through the library's own `convertToExcalidrawElements` → `redrawTextBoundingBox`. The commit copies that probe's layout onto a FREE text (containerId null, autoResize false at the fitted width) and marks the marker deleted. `markFailed` stamps `customData.voiceFailed` and refuses to overwrite landed words; `warmFonts()` is the font gate every measurement depends on. Line text wraps at the line-min floor instead of shrinking. |
 | `src/capture.ts` | `CreateVoiceCapture` | One long-lived `getUserMedia` stream → AudioWorklet (Blob-URL module) → Float32 ring buffer at 16 kHz; `wav(fromMs,toMs)` cuts a 16-bit mono WAV; mic transitions are pushed through `onMicChange`; `onLevel` and `noiseFloor` are RAW RMS (no display gain — that belongs to `level.ts`). |
-| `src/level.ts` | — | The ONE display mapping for loudness: raw RMS → meter %, plus the effective VAD threshold (max(setting, 3× floor)). Imported by the panel and the toolbar so a bar, a marker and the mic glyph's fill can never end up on three axes. |
+| `src/level.ts` | — | The display mappings for loudness, one function per axis: `meterPercent` (settings bar, full scale 0.06 = the VAD slider's range), `glyphLevel` (mic glyph, full scale 0.25, sqrt-compressed) and the effective VAD threshold (max(setting, 3× floor)). Imported by the panel and the toolbar so no surface invents its own gain. |
 | `src/vad.ts` | `Vad` (internal to capture) | Energy VAD as a pure state machine over 20 ms RMS frames; boundaries reported as sample indices; tracks the room's noise floor (kept across `reset()`), effective threshold = max(setting, 3× floor). |
 | `src/assign.ts` | `AssignUtterance` | Pure utterance→stroke rule plus `final`. Unit-tested; no timers, no scene. |
 | `src/stt.ts` | `Transcribe`, `CheckHealth` | `POST /v1/audio/transcriptions` (multipart, `verbose_json`) + `/health`; errors are typed `SttError` kinds. |
 | `src/controller.ts` | `CreateVoiceController` | The state machine: arm/disarm, tool hijack, stroke capture, utterance dispatch, placeholder animation, commit / fail / discard, orphans, retry. DOM-free. |
-| `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter) and only unbinds ghosts from containers that are not markers. |
+| `src/persist.ts` | — | Reads/writes the **vanilla** excalidraw-app storage so existing boards survive; debounced writes; `sweepGhostPlaceholders` deletes the placeholders, the stamped ⚠ warnings (`customData.voiceFailed`, bound or not) AND the region markers a reload stranded (a finished take leaves no marker, so a stored marker is always litter), and only unbinds ghosts from containers that are not markers. |
 | `src/settings.ts` | `VoiceSettings` | localStorage `voice-settings`, field-by-field coercion, subscriber fan-out. `language` is coerced against `ALLOWED_LANGUAGES` (`ko`, `en`; "" = auto), so a stored `ja`/`zh` from before round 4b heals to auto instead of being posted to a server that answers it 400. |
 | `src/settings-panel.tsx` | — | React settings dialog: URL, language (auto/ko/en), prompt, mic, font caps, pre-roll, VAD threshold over a live level meter, warm-mic, STT test. Also exports `voiceSettingsIcon`, the glyph for the main-menu entry that opens it. |
 | `src/toolbar.tsx` | `MountVoiceToolbarButton` | DOM injection into the library's own toolbar row: a mic-glyph button (`data-testid="toolbar-voice"`, aria-label "Voice area", F9 keybinding label) placed after the last native tool, plus a retry button right of it that stays hidden until something has failed; a tap of any length latches. The glyph IS the level meter: `buttonVisualState` (pure, unit-tested) maps the status to `--voice-level` through `level.ts` plus the `voice-tool--armed/--recording/--speaking/--mic-missing` classes, and voice.css clips the capsule's fill to that level. |
 | `src/App.tsx` | — | Wiring only: singletons once the imperative API exists, F9 handling, the `<MainMenu>` (the library's fallback items reproduced + a "Voice settings…" entry), `window.__excalidrawVoice`. |
-| `src/voice.css` | — | Styles for the injected buttons, the mic glyph's level fill/ring, the panel (top-LEFT, under the main menu) and the level meter, on Excalidraw's CSS variables. |
+| `src/voice.css` | — | Styles for the injected buttons, the mic glyph's level fill/ring (22 px: the library forces 16 px on toolbar SVGs), the panel (top-LEFT, under the main menu, offset clear of the shape-properties island) and the level meter. Every library variable used by the PANEL carries a literal fallback, because the panel renders outside the `.excalidraw` subtree where `--color-*` do not exist. |
 | `scripts/` | — | `copy-fonts.mjs` (prebuild), `deploy.sh`, `excalidraw-launcher.sh` (installed as `/usr/local/bin/excalidraw` on the whiteboard), `smoke.mjs`, and the CDP kiosk probes `kiosk-probe.mjs` / `kiosk-mic-check.mjs` / `kiosk-blob-check.mjs` / `kiosk-offset-check.mjs` / `kiosk-clear.mjs` (README "Probing the live kiosk" says which answers what). |
 | `test/unit`, `test/e2e` | — | vitest: stroke, vad, assign, capture, controller, fit, persist, settings, stt, hallucination, level, toolbar (`fit` and `controller` run against a faked library — the real numbers are the browser's job). Playwright against the real STT server with Chromium's fake mic. |
 
@@ -62,9 +62,16 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
 - **Never hold element objects across frames.** Look them up by id (`getSceneElementsIncludingDeleted`) when you
   need them; a transcript can land after the user moved, edited or deleted the shape.
 - **The drawn shape is a region marker, not a drawing.** Every marker carries `customData.voiceRegion` (it
-  survives storage) and is deleted in the same `IMMEDIATELY` update that commits the text — including a shape the
-  founder drew with a native tool while armed. A take that heard nothing deletes the marker too; only a FAILED
-  take keeps it, dashed, so the retry button has a visible target.
+  survives storage) and is deleted the moment the text lands — including a shape the founder drew with a native tool
+  while armed. Only a FAILED take keeps its marker, dashed, so the retry button has a visible target.
+- **A region is deleted by a COMMIT, or by the disarm — never mid-take.** A region nobody spoke into stays exactly
+  where the founder drew it until the session ends, and the disarm then sweeps all of them in ONE undoable update
+  with a toast that counts them. Closing a region early (`isSuperseded`) only stops speech landing in it; round 4a
+  wired closing straight to deleting, which erased every box drawn before the first spoken label while latched.
+- **Landed words are the only copy there is.** Nothing may overwrite a committed transcript to report something:
+  `fit.markFailed` returns `[]` when the text already carries words, and a failure is reported through the toast,
+  `status.failed` and the retry button instead. A ⚠ warning carries `customData.voiceFailed` so `persist.ts` can
+  sweep it without reading text content — and a commit CLEARS that stamp, or a reload would eat the transcript.
 - **The region's geometry lives in the target, not in an element.** `VoiceTarget.shape` is what a commit fits
   into, because by the second utterance (or a retry) the marker is already gone. `findTarget` treats a missing
   marker as normal; only the text element must be alive.
@@ -73,7 +80,9 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
   founder's choice, and the words stay legible).
 - **`captureUpdate` rules.** `CaptureUpdateAction.IMMEDIATELY` for anything the user should be able to undo
   (creating the placeholder, committing text, marking failed, discarding); `NEVER` for cosmetic churn the user
-  did not cause — placeholder animation frames, retry re-arming, tool restoration.
+  did not cause — placeholder animation frames, retry re-arming, tool restoration, **and the marker's deletion at
+  commit** (which is why the commit is two updates: the words IMMEDIATELY, then the scaffolding with NEVER. One
+  Ctrl+Z after a commit used to resurrect the dashed box as a live, ownerless region).
 - **Fit probes carry fresh ids.** `redrawTextBoundingBox` caches grown heights by container id; probing with a
   real container's id poisons that cache and the editor snaps the container later. Only the probe's LAYOUT is
   kept: the committed text is unbound, so nothing on the canvas can be re-laid-out against a container again.
@@ -82,7 +91,8 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
   alone. Only restore a tool we switched ourselves.
 - **Latch vs. hold.** F9 is hold (`pressStart`/`pressEnd`, window blur ends it); the toolbar button is latch
   (`toggleLatch`, any tap length, ignored while holding). The wall panel has no keyboard — the latch path must
-  always work, and no gesture on that button may open settings.
+  always work, and no gesture on that button may open settings (`ToolbarOptions` has no settings hook at all since
+  round 4c; settings are a main-menu item). The panel itself closes on Escape and on a tap outside it.
 - **Rendering a `<MainMenu>` REPLACES the library's fallback one.** App.tsx therefore reproduces LayerUI's
   `DefaultMainMenu` composition item for item (with the same `UIOptions.canvasActions` guards) before adding ours;
   an item deleted from that list disappears from the founder's board with no error. The e2e asserts the testids.
@@ -95,7 +105,14 @@ pointer events, so palm contacts and pans cut nothing. Never say "segment": the 
   status field with no rendered sink is a private field with extra steps (RETRO L2).
 - **One number, one scale.** A quantity crossing a module boundary carries the unit the owner measures in — the
   capture emits raw RMS, never a pre-gained copy — and the surface that draws it applies its own display gain
-  through `level.ts`. Two numbers on one axis are drawn by one function (RETRO L6).
+  through `level.ts`. Two numbers on one axis are drawn by one function (RETRO L6). `level.ts` owns exactly two
+  axes and one function each: `meterPercent` for the settings bar (full scale 0.06, the VAD slider's range) and
+  `glyphLevel` for the mic glyph (full scale 0.25, sqrt-compressed, because measured speech is 0.08..0.48 and on the
+  meter's axis the glyph sat pinned at 100% and strobed at word boundaries).
+- **Fitting waits for the fonts.** Text metrics are font metrics, and the library only loads its webfont once text
+  is first MEASURED — so `document.fonts.ready` on its own resolves too early. `fit.warmFonts()` measures once and
+  then awaits; App calls it at boot and the controller awaits it before it arms, so no take can be fitted against
+  fallback metrics. A test may not substitute its own font warm-up for that gate.
 - **No console noise** beyond `console.warn` on genuine failures.
 
 ## Verifying
