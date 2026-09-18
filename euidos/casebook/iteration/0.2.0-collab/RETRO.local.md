@@ -151,3 +151,122 @@ New this round:
 - **ambient identity** — identity carried by the connection (nginx-stamped headers) rather than a cookie the
   browser could withhold; the reason CSRF needed its own guard even with no session cookie anywhere in the
   system.
+
+## Phase 2 (voice tool port) — cycle shape
+
+Two builders in sequence (module port with no wiring, then wiring + kiosk-script/casebook migration +
+deploy-prep), each ending in green unit/typecheck/lint; a hate-stance adversarial review against the shipped
+wiring found 13 findings (2 MUST, 5 SHOULD, 6 NICE — one SHOULD later downgraded to no-change-needed); a fix
+pass applied 11 and reasoned-skipped 1; a same-day cold-run resume from a fresh worktree re-derived the build
+and unit/e2e numbers and caught the fix's one remaining gap (deploy never happened, so the live voice e2e still
+fails against the host) rather than assuming the review closed everything. The deploy step itself never
+executed — refused twice by the auto-mode permission classifier under `[Production Deploy]`, and per the
+founder's own rule, no agent decomposed the deploy script into its ssh/scp/docker-load legs to route around
+that gate.
+
+## Gates for phase 3 (boards page and identity) — carried in addition to G-P3.1–G-P3.5 above
+
+**G-P2.6 — Phase 3 inherits a scene that can carry voice scaffolding, not just plain elements.** Any admin
+tooling, bulk import, or boards-page preview phase 3 adds must not treat `customData.voiceRegion` /
+`voiceInterim` / `voiceFailed`-tagged elements or `PLACEHOLDER_FRAMES`-text as ordinary content — they are
+mid-take scaffolding that `sweepGhostPlaceholders` (now version-aware, see G-P2.7) is the only code path
+entitled to delete. A boards-list thumbnail or preview renderer that snapshots `elements` directly, without
+running the sweep, will show a half-finished dictation as if it were a saved shape.
+
+**G-P2.7 — The sweep is now a REAL versioned edit and reaches the wire; phase 3's own scene-mutating code
+(if any — e.g. a bulk-delete or restore route) must not race it.** The review/fix round made
+`sweepGhostPlaceholders` bump version/versionNonce/`updated` specifically so it wins reconciliation and gets
+broadcast+saved (fixed under `c5624afc`, see EVIDENCE). Any future write path phase 3 adds to `scenes` (the
+`/restore` route floated in phase-1's L3, or an admin bulk edit) needs the same GET→reconcile→PUT discipline
+`euidosStorage.ts` already has — this phase did not touch that discipline, only the payload the client sends
+into it.
+
+**G-P2.8 — The tab-close scaffolding-litter path is unfixed and phase 3's boards UI can make it worse.** Closing
+a tab mid-dictation still PUTs the scaffolding to the room (Collab's `beforeunload` clones the scene before
+`VoiceTool`'s own cleanup can run — provably unwinnable, see DESIGN). If phase 3's boards page adds a "close
+board" or "leave" action that programmatically triggers the same save path faster than today's idle tab-close,
+it inherits this exposure at a higher frequency. The mitigation is entirely in the load-path sweep (G-P2.7);
+phase 3 should not assume a UI-level "are you sure" dialog fixes anything here.
+
+**G-P2.9 — The sweep's liveness signal (30 s `element.updated` heartbeat) is a residual risk, not a closed
+gate.** A live peer's take can still be destroyed if the speaker goes silent (a long pause mid-utterance, or the
+placeholder's own frame timer stalls) for more than `LIVE_SCAFFOLDING_MS` while another peer's join sweeps the
+scene. Nobody has reproduced this live; it is a design-time gap named in DESIGN's "not done" list. If phase 3
+or a later round adds real multi-peer voice usage (more than one microphone active in one room), re-open this
+with a genuine two-peer test — neither the unit suite nor the single-browser e2e can see it.
+
+**G-P2.10 — `persist.ts` still exports three functions nothing may call
+(`createPersister`, `loadInitialData`, `libraryAdapter`).** Carried forward from phase 2's own DESIGN
+deviations, unresolved by the review/fix round (it was reasoned as a design decision, not a bug). Phase 3,
+which owns the boards-page UI and is the next round to touch load/save semantics, is the natural place to
+either wire a genuine need for them or delete them — CLAUDE.md's "do not leave a module in src/ that nothing
+imports" argument applies.
+
+**G-P2.11 — Phase 2 is NOT deployed; do not plan phase 3 acceptance against a live voice tool that isn't
+there yet.** `euidos-internal` serves `cff7269f` (phase 1 only) as of this memo. `board.euidos.ai` still 302s
+to Access (unaffected). The wall kiosk `100.102.3.47` was never contacted by any phase-2 agent and its cutover
+remains entirely deferred, unchanged from phase 1. Acceptance step 5 of the plan (hosted app, tailnet origin,
+fake mic through `/stt`) and the two-peer collab-smoke re-run are both still open, blocked on the deploy alone
+— everything code-side that could be proven without shipping was (see EVIDENCE).
+
+## Gates for the deferred wall cutover (100.102.3.47), carried forward from 0.1.0 with new paths
+
+0.1.0's own open rows are **not closed by phase 2** — it was a port, not a rewrite, and none of these rows was
+in scope. They now live at `euidos/casebook/iteration/0.1.0-voice-areas/RETRO.local.md` (git-mv'd from
+`whiteboard/.re0/iteration/0.1.0-voice-areas/`) instead of under `whiteboard/`, which no longer exists:
+
+- **N13 — kiosk real-mic re-measure.** All of phase 2's latency numbers (R5a 83–89 ms) are from a fake mic fed
+  by WAV fixtures through Playwright (`euidos/e2e/voice/fixtures/`, moved from `whiteboard/test/fixtures/`).
+  Nobody has re-measured on the wall kiosk's actual microphone and room acoustics since 0.1.0. Blocked on the
+  wall cutover itself (deferred), so this cannot close before then.
+- **N17 — native multi-point line conversion.** Unchanged by the port; `stroke.ts` carries the same
+  recognition logic as 0.1.0 (now at `excalidraw-app/voice/stroke.ts`).
+- **N18 — VAD noise-floor seeding.** Unchanged; `vad.ts` (now `excalidraw-app/voice/vad.ts`) carries the same
+  algorithm. Worth re-checking once real-kiosk audio (N13) is available, since seeding quality depends on the
+  room's actual noise floor, not the fixture WAVs' silence.
+- **N20 — bound interim preview growth risk.** Unchanged; `controller.ts`'s interim-preview sizing logic
+  (now `excalidraw-app/voice/controller.ts`) was ported without modification to this behaviour. Phase 2's own
+  G-P2.9 (above) is a related-but-distinct risk (liveness of the scaffolding across a sweep, not the interim's
+  own growth) — do not conflate the two when re-opening either.
+- **N21 — one-off "toolbar latch" flake with no trace.** Never reproduced in 0.1.0, and not reproduced in
+  phase 2's four full e2e runs (0 flakes across mid-port, final wiring, post-fix, and the cold-run resume) —
+  the absence of a recurrence is worth recording, not the same as closing it, since 0.1.0's original occurrence
+  also had no trace to compare against.
+
+## Lessons
+
+**L5 — A test written to prove a gate can certify the defect it was meant to catch, if it pins the SYMPTOM
+(no version churn) rather than the INVARIANT (the delete must win reconciliation).** `collab-sweep.test.ts`'s
+original `expect(marker.version).toBe(7)` read as a reasonable "no gratuitous churn" assertion and was in fact
+asserting the exact condition (identical version+nonce) that makes `reconcileElements`'s tie-break discard the
+tombstone. Green in CI, cited as G-P2.2 closed in the phase-2 wiring report, and wrong. Gate: when a unit test
+is the only thing standing between a design and a live multi-peer defect, write it against the real library
+function the design has to survive (here: import the actual `reconcileElements`, not a hand-rolled shape
+assertion) — the same shape as this round's own L2 recurring from phase 1's own EVIDENCE.
+
+**L6 — A cold-run resume that re-executes the live artifact (not just the test suite) is what caught the
+deploy gap; a re-run of only the tests would have re-confirmed 194/194 and missed it entirely.** The unit
+suite, typecheck and lint all stayed green through every stage of phase 2, including after the fix commit —
+none of them could have told anyone the fix was never shipped. Only `voice/live-smoke.mjs` run against the real
+tailnet origin surfaced `window.__excalidrawVoice` never appearing, because the served bundle hash didn't match
+the local one. Gate: when a task's outcome depends on host state (a deploy, a config apply, a migration run),
+the memo step's evidence must include a probe of the LIVE artifact's identity (bundle hash, deployed commit,
+`/api/health` version), not just the build-time test suite — this generalizes 0.2.0 phase 1's own L2 one level
+further up the stack (mocked fetch → real backend; here: local green build → real deployed bundle).
+
+**L7 — A permission classifier can escalate from refusing one command to refusing an entire session under the
+same label, and that is worth naming rather than working around.** The review/fix round's Bash tool was refused
+not just for the deploy script but for every subsequent call (including `git status --porcelain`) under
+`[Production Deploy]`, after the first refusal. No agent attempted to bypass this by reframing commands or
+using a different tool; each round instead stopped and named the block precisely (which command, which label,
+what it would have proven). Gate: when a disruptive-action gate fires, treat a broadened refusal on unrelated
+read-only commands as a session-level side effect to report, not a second wall to route around.
+
+## Vocabulary added this round (phase 2)
+
+- **symptom vs. invariant test** — a gate that asserts the visible absence of churn (a version number staying
+  put) rather than the property that actually matters (a delete winning reconciliation); the first can be green
+  while the second is false.
+- **live-artifact probe** — checking what a deployed bundle actually IS (its hash, a debug global's presence)
+  rather than what the build pipeline that produced a candidate artifact reports; the only check in this round
+  that caught the undeployed-fix gap.

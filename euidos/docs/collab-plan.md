@@ -117,9 +117,11 @@ detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,EVIDENCE,RETRO}.local.md
    `/api/rooms`); `GET /api/boards` lists it; the public origin answers 302 →
    Access for `/`, `/api/boards` and `/socket.io/`; `/api/health` ok via both.
 
-## Phase 2 — voice tool port — SHIPPED (2026-09-18), acceptance 5 pending
+## Phase 2 — voice tool port — MERGED TO MASTER, NOT DEPLOYED (2026-09-18), acceptance 5 pending
 
-What landed, as facts for phase 3 and for anyone reading this plan later:
+Code-complete and reviewed on `master` (six unpushed commits ending `c5624afc`); `euidos-internal` still serves
+the phase-1 build (`cff7269f`, no voice) as of this writing — the deploy has not run. What landed, as facts for
+phase 3 and for anyone reading this plan later:
 
 1. The tool is `excalidraw-app/voice/` — the 14 modules and `voice.css` under
    their 0.1.0 names, plus `VoiceTool.tsx` (the wrapper's `src/App.tsx` wiring
@@ -137,11 +139,13 @@ What landed, as facts for phase 3 and for anyone reading this plan later:
    `_reconcileElements`: a peer seeing someone else's live interim preview is
    acceptable, a persisted ghost is not. Covered by
    `voice/__tests__/collab-sweep.test.ts`.
-3. Tests: 179 unit under the root vitest (`yarn vitest run excalidraw-app/voice`,
-   jsdom); the 27 Playwright gates moved to `euidos/e2e/voice/` and run against
-   the BUILD (`vite preview` of `excalidraw-app/build` on `127.0.0.1:4173`) plus
-   the real STT — 27/27 green, no flakes. R5a pen-up → words **85 ms**
-   (gate ≤ 400 ms), STT round trip 1496 ms.
+3. Tests: 194 unit under the root vitest (`yarn vitest run excalidraw-app/voice`,
+   jsdom — 174 at first port, +5 for the collab sweep, +15 from the review/fix
+   round below); the 27 Playwright gates moved to `euidos/e2e/voice/` and run
+   against the BUILD (`vite preview` of `excalidraw-app/build` on
+   `127.0.0.1:4173`) plus the real STT — 27/27 green, no flakes, across four
+   independent runs including a same-day cold-run resume. R5a pen-up → words
+   **83–89 ms** (gate ≤ 400 ms), STT round trip 1.5–1.6 s.
 4. Kiosk scripts are `euidos/scripts/kiosk/`; `deploy.sh` became
    `deploy-static.sh` and is LEGACY (the wall still serves its own pre-port
    static build and is frozen until the founder approves the cutover — do not
@@ -157,10 +161,35 @@ What landed, as facts for phase 3 and for anyone reading this plan later:
    with a fixture WAV answered **200 in 1.82 s** with the correct transcript,
    `/stt/health` warm — nginx's identity-header stripping is transparent to the
    upload.
-6. Still open: acceptance step 5 — the hosted app on the tailnet origin
+6. A review found 2 MUST + 5 SHOULD + 6 NICE findings against the wiring, most
+   severe: `persist.ts`'s ghost-placeholder sweep tombstoned without bumping
+   version/versionNonce, so the deletion never won reconciliation against a
+   live peer and never even left the sweeping client's own tab — fixed in
+   `c5624afc` (`newElementWith`, liveness-aware on the collab call site via a
+   30 s `element.updated` heartbeat). 11 of 13 findings fixed, 1 skipped and
+   reasoned (the `window.__excalidrawVoice` debug global and the STT host
+   literal ship in every build, including the hosted one — narrowing it needs
+   new config threading both e2e suites depend on; left for the founder), 1
+   turned out not to apply (a named scratch test file did not exist in the
+   tree). Casebook: `euidos/casebook/iteration/0.2.0-collab/` phase-2 sections.
+7. **Deploy blocked, not attempted around.** `deploy-whiteboard.sh master` was
+   refused twice by the Claude Code auto-mode permission classifier under
+   `[Production Deploy]`; per the founder's own rule, no agent decomposed the
+   script into its ssh/scp/docker-load legs to route around the gate. A
+   same-day cold-run resume proved the build and storage image both build
+   green from `master` and re-ran the full unit+e2e suite against a fresh
+   worktree, but its own `live-smoke.mjs` run against the real tailnet origin
+   failed (times out waiting for `window.__excalidrawVoice` — the served
+   bundle has zero occurrences of "voice"), confirming the host is still on
+   phase 1 alone. Someone with deploy permission must run
+   `bash fleet-infra/scripts/deploy-whiteboard.sh master` before acceptance
+   step 5 or the two-peer collab-smoke re-run can proceed.
+8. Still open: acceptance step 5 — the hosted app on the tailnet origin
    transcribing through `/stt` with the fake mic against the LIVE host (deploy's
    job, not the builder's), and 0.1.0's own open rows N13/N17/N18/N20/N21, which
-   moved with the casebook and are NOT closed by this phase (G-P2.5).
+   moved with the casebook (now at
+   `euidos/casebook/iteration/0.1.0-voice-areas/`) and are NOT closed by this
+   phase (G-P2.5).
 
 ## Phase 3 — boards page and identity
 

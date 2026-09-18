@@ -133,3 +133,135 @@ between "the plan" and "what shipped and passed review", because that is where t
   credentials from the tailnet, and both are cheap fixes relative to a second deploy round.
 - Keep `whiteboard/` completely untouched and undeployed this round. Phase 2 owns the port; phase 1 proves the
   new backend and app plumbing hold up without voice in the picture at all.
+
+## Phase 2 — voice tool port (as built)
+
+Understood as: move the voice tool (0.1.0, `whiteboard/`) into `excalidraw-app/` so it runs against the
+WORKSPACE Excalidraw packages (current master) instead of the wrapper's published `0.18.1`, and so its scene
+mutations flow through the same collab/persistence path phase 1 built — with no upstream file rewritten and
+`whiteboard/` retired once the port is proven. Binding: `euidos/docs/collab-plan.md` phase-2 section, phase-1's
+`RETRO.local.md` G-P2.1–G-P2.5 gates, and `whiteboard/CLAUDE.md`/the 0.1.0 casebook as the tool's spec. Weight:
+**full** — two builders in sequence (module port, then wiring+deploy prep), an adversarial review, a fix pass,
+and a cold-run resume, all in this round.
+
+## Thesis
+
+The tool's own contracts (`contracts.ts`, `contracts-capture.ts`) do not change; only their host does. Every
+voice module keeps its 0.1.0 name and file boundary under `excalidraw-app/voice/`. The one new file,
+`VoiceTool.tsx`, is the wrapper's `src/App.tsx` wiring collapsed into a single component so the upstream diff
+stays small: four touchpoints (`App.tsx`, `components/AppMainMenu.tsx`, `collab/Collab.tsx`, plus later
+`data/euidosStorage.ts` for the retry-aware save) and zero new props threaded through `<Excalidraw>` — the
+controller still self-subscribes via `api.onPointerDown/onPointerUp`, the settings panel reaches the menu
+through the voice module's own store.
+
+## What was built (as-built)
+
+- `excalidraw-app/voice/` — 14 modules + `voice.css`, ported byte-faithful from `whiteboard/src/*` where API
+  drift allowed (contracts, controller, fit, persist, capture, vad, stroke, assign, level, stt, settings,
+  settings-panel, toolbar) — see "API drift" below for every place master would not compile against the
+  0.18.1-shaped code. `VoiceTool.tsx` (245 lines) is the new wiring component; `voice/index.ts` is a barrel so
+  upstream files import one path instead of two.
+- `whiteboard/` deleted from the repo and disk (`git rm -r` + `rm -rf`); its Playwright suite moved to
+  `euidos/e2e/voice/` (own `package.json`, pinned `@playwright/test` 1.63.0, fixtures moved, config rewritten
+  to serve `excalidraw-app/build` via `vite preview`); its casebook moved to
+  `euidos/casebook/iteration/0.1.0-voice-areas/` (git mv); its kiosk scripts moved to `euidos/scripts/kiosk/`
+  with `deploy.sh` renamed `deploy-static.sh` and marked LEGACY — DO NOT RUN (it builds a `whiteboard/dist` that
+  no longer exists); `copy-fonts.mjs` was **not** ported (see deviations).
+- `sweepGhostPlaceholders` wired on both scene-load paths per G-P2.2: local/initial (`App.tsx initializeScene`
+  and the `hashchange` re-init) and collab (`Collab.tsx`, right after `euidosStorage.loadFromFirebase`, before
+  `_reconcileElements`) — deliberately not in the per-frame reconcile path, where a peer's live interim preview
+  is intended behaviour.
+
+## API drift absorbed by the port (master vs. the 0.18.1 the wrapper targeted)
+
+- `@excalidraw/excalidraw/element/types` → `@excalidraw/element/types` (type-only).
+- `@excalidraw/excalidraw/data/transform` → `@excalidraw/element/transform` (type-only).
+- Value imports (`CaptureUpdateAction`, `newElementWith`, `ROUNDNESS`, `convertToExcalidrawElements`, the lazy
+  `restoreElements`/`restoreAppState`/`restoreLibraryItems` import) deliberately kept on the `@excalidraw/excalidraw`
+  barrel — it resolves to `packages/excalidraw/index.tsx` under the root tsconfig/vitest/vite aliases and keeps
+  `vi.mock("@excalidraw/excalidraw")` doing what the 0.1.0 tests wrote it to do.
+- `appState.currentItemStrokeWidth: number` is gone on master; replaced by `currentItemStrokeWidthKey` +
+  `STROKE_WIDTH[key]` (from `@excalidraw/common`) in `controller.ts`'s `snapshotStyle` — no contract change,
+  since every voice-drawn element is non-freedraw.
+- `window.EXCALIDRAW_ASSET_PATH`'s wrapper-local narrower declaration was dropped (master's own
+  `global.d.ts` conflicted with it; nothing in `voice/` read the wrapper's copy).
+- **Toolbar DOM, the one drift no unit test can hold**: 0.18.1 rendered a tool as `label.ToolIcon` around a
+  hidden `input[data-testid="toolbar-<type>"]`; master's `Tools.tsx` renders a single
+  `button.ToolIcon[data-testid="toolbar-<type>"]`. `toolbar.tsx`'s DOM-matching and injected buttons were
+  adapted; only the Playwright suite proves it (see EVIDENCE — 27/27 green against the real DOM).
+- `points` on linear/freedraw elements are branded `LocalPoint` on master; only the `controller.test.ts` fixture
+  needed `pointFrom<LocalPoint>` — production code was unaffected.
+- The root vitest config is `jsdom` with a mandatory `setupFiles`, not the wrapper's `node` environment; jsdom's
+  `Blob` lacks `arrayBuffer()`, fixed with a `blobBytes()` helper in `vad.test.ts` (3 gates), no production code
+  affected.
+- `copy-fonts.mjs`/`public/fonts` are obsolete: `excalidraw-app` already emits `build/fonts/` via its own
+  `woff2BrowserPlugin` and sets `EXCALIDRAW_ASSET_PATH` in `index.html`; `fit.warmFonts()` needs no build step.
+
+## Deviations from the phase-2 plan section, with why
+
+- **`persist.ts` ships three exports the app must never call** (`createPersister`, `loadInitialData`,
+  `libraryAdapter`) — vanilla-localStorage scaffolding the app already owns via `data/LocalData.ts` +
+  `data/euidosStorage.ts`. Kept rather than deleted on the first pass because narrowing the module's own
+  contract was judged a design decision, not a builder's convenience; flagged in `voice-tool-CLAUDE.md`'s Never
+  list. Not resolved by the review/fix round either (see RETRO G-P2.10).
+- **No env-gated kill switch at first wiring** — `<VoiceTool>` and the menu item mounted unconditionally,
+  breaking the fork's own established pattern (`VITE_APP_ENABLE_PWA`, `VITE_APP_ENABLE_TRACKING`). Added in the
+  review/fix pass: `excalidraw-app/voice/enabled.ts`, `isVoiceEnabled()` on `VITE_APP_ENABLE_VOICE`, fail-open.
+- **`window.__excalidrawVoice` debug surface and the `100.81.33.83:8770` literal ship in every build**,
+  including the hosted `board.euidos.ai` bundle — flagged by review, explicitly **skipped**: both e2e suites and
+  the kiosk probes read the debug global, so gating it needs the same fail-open flag as the kill switch above
+  plus new config threading through `deploy-whiteboard.sh` and two e2e configs, for a residual exposure (an
+  internal tailnet IP, behind Access on the public origin) judged not worth that surface. Left for the founder.
+
+## Review-driven fixes (see EVIDENCE for the finding→fix table; commit `c5624afc`)
+
+- `persist.ts`'s sweep now performs a real versioned edit (`newElementWith(el, { isDeleted: true })`) instead of
+  a shallow `{...el, isDeleted:true}` copy, so a swept tombstone bumps version/versionNonce/`updated` and can
+  actually out-race a live peer's copy through `reconcileElements`'s tie-break and survive `DELETED_ELEMENT_TIMEOUT`.
+  **This was the MUST finding**: the pre-fix sweep was a canvas-local cosmetic that never left the sweeping
+  client's tab (see RETRO for the full mechanics).
+- The sweep is now liveness-aware on the collab call site only (`SweepOptions.keepRecentMs`, default
+  `LIVE_SCAFFOLDING_MS = 30_000`, judged per marker/placeholder GROUP via `element.updated` as a heartbeat) —
+  the local/initial path still sweeps unconditionally, which is correct there (that browser is the only one
+  that could have been mid-take before its own reload).
+- `Collab.tsx`'s broadcast watermark (`lastBroadcastedOrReceivedSceneVersion`) is now taken from the PRE-sweep
+  array, so the sweep counts as a local change and actually reaches the wire and the next save.
+- `controller.dispose()` now runs the same load-path sweep over the live scene (CaptureUpdateAction.NEVER)
+  before tearing down, so a clean React unmount leaves no litter. The tab-CLOSE case is **not** fixable: Collab
+  registers its `beforeunload` handler in its own constructor, earlier than `VoiceTool`'s effect can run, and
+  clones the scene synchronously there — no later listener can win. Documented as an invariant, not silently
+  left.
+- `fit.warmFonts()`'s memo is now keyed by font family (`Map<number, Promise<void>>`) instead of a single
+  `??=` the first caller settled forever, so `controller.ts`'s per-take `await fit.warmFonts(style.fontFamily)`
+  means what it says for any family other than the boot-time default.
+- `euidosStorage.ts`'s `saveToFirebase` takes an optional `getLiveElements` reader called at the top of every
+  409 retry (not just the first attempt), so a race can no longer persist a 45%-opacity interim preview as the
+  stored state of words the author's canvas has already committed.
+- Merge-surface cleanup: `voice/index.ts` barrel + a `VoiceSettingsMenuItem` export cut `AppMainMenu.tsx`'s
+  insertion from +17 to +5 lines and `App.tsx`'s voice imports from two paths to one.
+- `build-app.sh` now prints the entry bundle's raw and gzipped byte size, not just directory size, so future
+  phases have a real regression baseline (first: 1,895,329 B raw / 611,233 B gzipped, +901 B over the pre-fix
+  build).
+
+## Not done, named and owned
+
+- The tab-close scaffolding-litter path (above) — leans entirely on the load-path sweep, which is why the
+  tombstone-bump fix is a release blocker rather than a cleanliness nicety.
+- `persist.ts`'s three unused vanilla-storage exports — still shipped, still unwired, still a named decision
+  for the founder (RETRO G-P2.10).
+- The `window.__excalidrawVoice` / STT-host-literal exposure in every build — skipped with reasons above.
+- A second ownership/session-liveness signal for the sweep (beyond the `updated` heartbeat) — `RETRO` G-P2.9
+  names the residual risk (a live peer's take can still be destroyed if it goes silent for 30s+, e.g. mid-utterance
+  while another peer's join sweeps).
+
+## Contestable decisions (settled for phase 2)
+
+- Fix the sweep's timestamp-based liveness with the cheapest signal already in hand (`element.updated` as a
+  heartbeat) rather than adding a new `customData.voiceSession` protocol field — cheaper, no schema/version
+  bump, and the controller already rewrites the placeholder ~3x/s and the interim on every slice, so the
+  heartbeat is real.
+- Ship the review's MUST/SHOULD fixes in the same round rather than deferring to a "phase 2.1" — same reasoning
+  as phase 1: the tombstone-resurrection defect is reachable the first time two peers share a room with the
+  voice tool on, and the fix is cheap relative to a second review round.
+- Do not attempt the deploy from an agent session once the permission classifier refused it twice — the
+  founder's own no-workaround rule applies to deploys as much as to any other disruptive host action (see RETRO).
