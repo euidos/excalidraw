@@ -5,7 +5,8 @@
   "description": "Voice-tool gates (0.1.0's 27 Playwright gates) against a BUILD of excalidraw-app and the real STT server.",
   "type": "module",
   "scripts": {
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "live-smoke": "node live-smoke.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0"

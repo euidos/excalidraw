@@ -62,6 +62,29 @@ also why the suite exercises the DIRECT STT URL: `contracts.defaultSttUrl` dials
 loopback origin and `<origin>/stt` from anything else. `@playwright/test` resolves from `euidos/e2e/node_modules`
 (one install for both suites); the Chromium build is the shared `~/.cache/ms-playwright` one.
 
+### The live pass (the deployed origin, not a build on loopback)
+
+The 27 gates never touch the hosted stack: on loopback the app dials STT directly, there is no `/api` backend and
+no room. What only the deployment can prove — `getUserMedia` on the HTTPS origin, the multipart upload through
+nginx's same-origin `/stt/` proxy (whose location block strips the identity headers), and that the words persist
+through `/api/rooms/:id` while the scaffolding does NOT — is one script:
+
+```sh
+curl -sf https://euidos-internal.pony-bellatrix.ts.net/stt/health   # warm:true, or the run means nothing
+cd euidos/e2e/voice && node live-smoke.mjs                          # default origin = the tailnet name
+```
+
+It opens a fresh `#room=` link, arms with F9 against Chromium's fake mic (`fixtures/en-short.wav`), draws a region,
+waits for the words, then INJECTS the litter a crashed session leaves (marker + interim preview + placeholder),
+waits until that has really reached the backend, and reopens the board cold: the words must be there and the
+scaffolding must be gone. Run it after every deploy that touches `excalidraw-app/voice`, `collab/Collab.tsx` or
+the nginx `/stt` block. `board.euidos.ai` is behind Cloudflare Access (302 to the login) and cannot be driven
+headless — the tailnet origin is the one under test.
+
+One ordering fact the script encodes, because it cost a debugging round: `Collab.initializeRoom()` calls
+`resetScene()` and only then loads the room, so a take started before the room answers is wiped mid-flight and its
+transcript is dropped. Never arm before `GET /api/rooms/:id` has come back.
+
 ### Running the kiosk scripts
 
 `euidos/scripts/kiosk/*.mjs` import `@playwright/test`, and node resolves an ESM import against the FILE's path,
