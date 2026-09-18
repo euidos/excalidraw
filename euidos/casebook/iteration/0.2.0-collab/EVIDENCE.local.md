@@ -135,3 +135,143 @@ clean. **euidos-internal still serves the phase-1 build (`cff7269f`) — nothing
 | Deploy of master 3bf71edd | **met** | `deploy-whiteboard.sh master` run by the main loop (agents are refused by the deploy gate): storage image 3bf71edd, all host smoke lines ok, tunnel container untouched. |
 | Live voice on the hosted HTTPS origin (acceptance step 5) | **met** | `euidos/e2e/voice/live-smoke.mjs` PASS 26.4 s: getUserMedia granted, words landed 3040 ms after arming, multipart upload through same-origin `/stt/` (0 direct requests), scaffolding swept on the collab load path, no page errors. |
 | Collab smoke on the phase-2 build | **met** | `collab-smoke.mjs` PASS 25.2 s, relay 10 ms; `board.euidos.ai` still 302 → Access. |
+
+## Phase 3 (boards page and identity) — build round evidence
+
+Run of record: fork `excalidraw` master, 2 unpushed commits (`952426e8`, `e2d2dcfa`), tree clean.
+**`euidos-internal` still serves the phase-2 build — nothing from phase 3 is deployed.**
+
+- Unit: `yarn vitest run excalidraw-app` — 22 files, 251 tests, all green (219 before this work + 32 new in
+  `boards/__tests__/`). `yarn test:typecheck` clean. `eslint --max-warnings=0` clean over `excalidraw-app/boards`
+  and every touched file.
+- The 32 new unit tests, by file: `api.test.ts` (12 — request shape, error-status mapping, 401→session error,
+  403→explicitly NOT a session error, rejected fetch→session error), `identity.test.ts` (6 — one shared
+  `/api/me` per page, failures not cached, unknown `via` degrades to "wall", canManageBoards), `route.test.ts`
+  (6 — `/boards`/`/` are the list, `#room=`/`#json=` never swallowed, `#local`/`#addLibrary=` stay with the
+  editor, `hasLink` false for `roomKey: ""`), `format.test.ts` (8 — relative-time buckets, future-skew, an
+  unparseable date, singularization).
+- E2E, all against a fresh `euidos/scripts/build-app.sh` output of the committed tree (entry bundle 1,906,267 B
+  raw / 614,014 B gzipped, no Firebase endpoints) and a throwaway rehearsal of the real
+  `fleet-infra/stacks/euidos-internal` compose (project `boards-e2e`, `127.0.0.1:18099` only, fresh volume,
+  throwaway Postgres password):
+  - `euidos/e2e/boards` — **8/8 green in 36 s.** Three identities resolve correctly (alice, bob via tailnet
+    headers; no header → wall); alice creates two boards from an empty list (one entirely from the keyboard)
+    and returns via the main-menu "Boards" item; bob's rectangle in the older board drives a real
+    `PUT /api/rooms` and moves that row to the top of alice's list ("1 element · last edited by
+    bob@euidos.ai"); bob renames inline, alice sees it on reload, and order does NOT move (rename must not bump
+    `updatedAt`); the wall shows "Wall", has zero rename/delete controls, and Copy link lands a working
+    `#room=` URL that renders bob's rectangle; a seeded `roomKey: ""` board shows a disabled "Link unavailable";
+    bob deletes a board with a scene (Escape backs out of the confirm dialog first, then confirm) — alice's list
+    drops it, `GET /api/rooms/:id` 404s, and the stale `#room=` link opens an empty editor with no page error; a
+    final test asserts zero uncaught page errors across the whole run.
+  - `euidos/e2e/voice` — **27/27 green in 3.4 min** (STT `warm:true`, large-v3-turbo; R5a pen-up→words 83 ms,
+    STT round trip 2,099 ms).
+  - `euidos/e2e/collab-smoke.mjs` against the rehearsal stack — **PASS in 24 s** (relay 13 ms, save reached PUT
+    at 14.2 s, cold reopen still shows the rectangle, `/api/boards` lists the room).
+- Real finding surfaced during the run, not by inspection: **nginx's `Host $host` proxy header drops the port**,
+  so any origin with a non-default port compares a portless `Host` against a ported `Origin` and 403s its own
+  same-origin writes — reproduced first as a suite failure ("Cross-site request rejected" on
+  `POST /api/boards`), then confirmed with a bare curl (403 with `Origin` set, 201 without). Production is
+  unaffected (both front doors are on 443, no port in `Origin` either) but the mismatch is real. Not fixed
+  (`fleet-infra` is out of file scope); `rehearsal.sh` patches a copy of the config and documents why.
+- Two baseline regressions caught by running the existing suites, not by inspection, and fixed in the same
+  round: `excalidraw-app/tests/collab.test.tsx` mounted `<ExcalidrawApp/>` at jsdom's bare root and expected the
+  editor canvas — `BoardsRoute` now short-circuits to the editor under a compile-time `isTestEnv()` check;
+  `euidos/e2e/voice` navigated to the bare origin, which is now the boards index — its helper now targets
+  `/#local`.
+- Re-run discipline: the first boards-suite run used a build predating two late refactors; the app was
+  rebuilt from the final committed tree and both the boards suite and `collab-smoke.mjs` were re-run against
+  that build before the commits were made.
+- Teardown verified: `docker compose -p boards-e2e down -v` — 0 containers, 0 volumes, the e2e storage image
+  removed. Nothing was ever published on `0.0.0.0`; `euidos-internal` and the wall kiosk (`100.102.3.47`) were
+  never contacted.
+
+## Phase 3 — review findings → fix status (one row per finding, most-severe first)
+
+| Severity | Finding | Status | Evidence it's fixed |
+| --- | --- | --- | --- |
+| MUST | Browser Back out of a live board unmounts the editor in place, discarding unsaved drawing and leaving the collab socket open | **fixed** | `boards/leave.ts` flush registry + a real navigation (reload) on the editor→boards transition. New tests: `BoardsRoute.test.tsx` "does NOT unmount a live editor on Back" (+ popstate), `leave.test.ts` (5), e2e "Back out of a board keeps what was drawn" (draw, Back immediately, `GET /api/rooms` shows 1 element). |
+| MUST | A `roomKey: ""` board's Open/name button silently opens the user's private local scratch scene dressed up as that board | **fixed** | Every open affordance (name, Open, Copy) now shares one `hasLink()` gate; unopenable rows read "cannot be opened — no room key stored". `BoardsPage.test.tsx` "offers no way to open it and says why"; e2e legacy-row gate rewritten. |
+| SHOULD | The main-menu "Boards" item pops a browser "Leave site?" dialog and loses unsaved drawing if accepted | **fixed** | `gotoBoards()` is async: flushes the scene (`stopCollaboration(false)`/`saveCollabRoomToFirebase`) before navigating, with a "Saving…" state. `route.test.ts` flush-before-navigate ordering; e2e "the main menu's Boards item saves too, and does not prompt on the way out" (1 element saved, zero dialogs). |
+| SHOULD | The list is fetched once and never refreshed — stale the moment anyone else works | **fixed** | Refetch on `focus`/`visibilitychange` plus a visible Refresh button; a failed refresh never blanks a usable list. Tests: "refetches when the tab comes back to the foreground", "a failed refresh does not blank a usable list". |
+| SHOULD | After an Access session expires, the only offered action ("Try again") can never succeed | **fixed** | Session errors render a "Reload" button (`window.location.reload()`); "Try again" survives only for non-session errors. Two `BoardsPage.test.tsx` cases. |
+| SHOULD | No request timeout — a hung backend leaves "Loading boards…" indefinitely with "New board" disabled | **fixed** | `AbortSignal.timeout` (15 s) mapped to a retryable `BoardsTimeoutError`; "New board" no longer disabled purely because the list is loading. `api.test.ts` timeout case, `BoardsPage.test.tsx` "keeps New board usable while the list is still loading". |
+| SHOULD | The delete confirm dialog is not modal for the keyboard — focus escapes, Escape stops working, focus is dropped on close | **fixed** | Tab trapped inside the dialog (wraps both directions), Escape works via a capture-phase document listener, backdrop mousedown closes it, focus returns to the opening control. Three `BoardsPage.test.tsx` cases. |
+| SHOULD | Row action buttons render with no button chrome in light theme | **fixed** | `--color-surface-high` + `--default-border-color` in both themes. e2e paint gate comparing computed background/border against the row's own. |
+| SHOULD | A deleted board's peers get a generic "Couldn't save to the backend database" ~20 s later, with no named cause | **fixed** | `euidosStorage.ts` maps a `PUT /api/rooms` 404 to `BoardDeletedError`; the dialog names the cause. `euidosStorage.test.ts` "names the cause when the board was deleted under us (PUT 404)". |
+| SHOULD | Boards are buttons, not links — cannot be opened in a new tab or have their URL copied via browser affordances | **fixed** | Board names are `<a href={boardLink}>`; redundant Open button removed. "renders the name as an anchor to the room". |
+| SHOULD | The 28-line `applyEdgeIdentity` inside upstream's `Collab.tsx` is not "one mount line" and is the fork's largest rebase-conflict surface | **fixed** | Moved to `boards/identity.ts` as `resolveCollaboratorName(currentUsername)`; `Collab.tsx` keeps the import plus one call. Three `identity.test.ts` cases. |
+| SHOULD | `ShareDialog`'s free-text name field can overwrite the "edge identity" collaborator name after joining, letting anyone broadcast another person's email | **fixed** | `boards/CollaboratorNameField.tsx` renders read-only once an edge identity resolves; upstream's editable field survives only when no identity resolved. Three `CollaboratorNameField.test.tsx` cases. |
+| SHOULD | `hasLink()` only checks non-empty, weaker than the LINK PARSER (`RE_COLLAB_LINK`, 22-char key) the link is fed to — an enabled Copy link can still be silently broken | **fixed** | `hasLink()` now enforces `/^[a-zA-Z0-9_-]{22}$/`; `route.test.ts` "answers the LINK PARSER, not the backend". |
+| SHOULD | The wall's G-P3.1 403 is asserted only at the UX layer (hidden buttons), never at the security layer | **fixed** | e2e wall test now sends a header-less PATCH and DELETE with an explicit `Origin` via the `request` fixture and asserts 403 from the backend. |
+| SHOULD | `voice-tool-CLAUDE.md`'s spec and never-list still document the G-P2.10-deleted exports as live | **fixed** | Three stale sites rewritten to past tense; the never-list's "open decision" deleted (the decision is closed). |
+| NICE | `displayNameFor()` returns "Wall" for any unrecognized `via`, not only the backend's actual wall identity | **fixed** | Returns "Wall" only when the backend resolved `via:"wall"`; otherwise `login \|\| name \|\| "Unknown"`. Two `identity.test.ts` cases. |
+| NICE | `routingEnabled()`'s test short-circuit means no unit/integration test can catch a route rule that wrongly swallows the editor | **fixed** | `BoardsRoute` takes an overridable `enabled` prop; 9 new `BoardsRoute.test.tsx` cases cover `/`, `/boards`, `#room=`, `#local`, `#addLibrary=` with the short-circuit bypassed. |
+| NICE | An emptied rename is discarded silently; notices never clear or dismiss | **fixed** | Emptied rename shows "A board name cannot be empty." and keeps the field open; notices get a dismiss control and clear on a new action. Two `BoardsPage.test.tsx` cases. |
+| NICE | The boards index leaves the tab titled "Excalidraw Whiteboard"; the wall gets an unreviewed "New board" button | **partially fixed, one half skipped and reasoned** | `document.title` is now "Boards — euidos" while mounted, restored on unmount (test: "is titled for the boards index, and gives the title back on leaving"). The wall's "New board" button is deliberately left in place — see DESIGN "Not done, named and owned" for why the stated harm doesn't hold up. |
+| NICE | No way to find a board except scrolling a list ordered only by last edit | **fixed** | Client-side filter over the fetched rows (name + updatedBy), shown once there is more than one board. "filters the list by name or by who edited it". |
+
+## Phase 3 — fix-round re-verification
+
+Unit: `yarn vitest run excalidraw-app` — **26 files, 297 tests, all green** (was 251; +46: `leave.test.ts` (5),
+`BoardsRoute.test.tsx` (9), `BoardsPage.test.tsx` (16), `CollaboratorNameField.test.tsx` (3), `route.test.ts`
+5→11, `identity.test.ts` 6→11, `api.test.ts` 12→14, `euidosStorage.test.ts` 20→21). `yarn test:typecheck` clean;
+`eslint --max-warnings=0` clean over `excalidraw-app/boards`, `collab/Collab.tsx`, `share/ShareDialog.tsx`,
+`data/euidosStorage*.ts`.
+
+E2E, all against a fresh `build-app.sh` output of the final committed tree (entry bundle 1,910,936 B raw /
+615,756 B gzipped) and a throwaway rehearsal stack rebuilt from scratch: `euidos/e2e/boards` **11/11 in 45 s**
+(was 8 — the two new exit gates, the backend 403 gate, the unopenable-row gate, the light-theme paint gate);
+`euidos/e2e/collab-smoke.mjs` **PASS in 24 s** (relay 16 ms, PUT at 14.2 s, cold reopen renders, `/api/boards`
+lists the room); `euidos/e2e/voice` **27/27 in 3.4 min** (STT `warm:true`, R5a 98 ms, STT round trip 1,915 ms),
+run AFTER the last app-code change, not before it. Teardown re-verified: `down -v`, 0 containers, 0 volumes,
+image removed. Commits: `3fb2a719` (leave-safely + unopenable-row fixes), `2eea29a7` (e2e gates for the new
+exits, the wall's 403, the light-theme buttons).
+
+## Phase 3 — additional security/merge-surface findings, deferred by scope, verified live on a cold worktree
+
+A separate cold-worktree run at `master @ 2eea29a7` (worktree `excalidraw-boards-e2e-worktree`, discarded after)
+confirmed build/unit/backend/voice-e2e all clean, then hit one real suite-design gap: `euidos/e2e/boards` is
+serial and stateful and assumes a fresh database (documented at the top of the spec) — **running it a second
+time against the SAME rehearsal stack, with no reset in between, fails at test 2** ("alice lands on an empty
+boards page") because run 1's boards are still in the stack's Postgres volume. 9 downstream tests didn't run as
+a consequence (Playwright serial mode stops the file) — a suite-design gap, not an app regression. First
+failure:
+
+```
+boards.spec.ts:142
+Expected: visible (getByTestId('boards-empty'))
+Timeout: 15000ms — element(s) not found
+```
+
+Everything else in that cold run was clean: build (entry 1,910,844 B / 615,670 B gzipped, 45 M build size),
+unit (23 files, 292 tests, 14.43 s — confirms G-P2.10's housekeeping holds: `persist.test.ts` is 22 tests with
+no references to the deleted exports), backend (`storage-backend/test/run.sh`, throwaway Postgres 16-alpine, 10
+suites / 41 tests, 5.7 s), voice e2e (27/27 in 3.3 min, STT `warm:true`). Worth a `TRUNCATE`/`DELETE` step in
+`rehearsal.sh` or a global setup hook if repeat runs against one live stack instance are ever expected (e.g. CI
+retries) — noted, not fixed, since it is a test-harness gap rather than a shipped-code defect.
+
+Five additional findings surfaced by a second-pass security/merge-surface review of the fix-round diff, all
+SHOULD/NICE, not yet re-verified as fixed (open for the next round or the main loop to triage):
+
+- `hasLink()`'s tightened regex and the `resolveCollaboratorName` extraction (both applied above) were this
+  pass's own two SHOULD fixes that landed; the pass's remaining findings are net-new and unapplied:
+  the security-review's suggestion to also narrow the backend's `ROOM_KEY_RE` to match `hasLink()` (contestable
+  decision: rejected for this round, backend out of scope);
+  `identity.ts`'s `displayNameFor()` was tightened as above but a residual "Unknown" edge case (a named `via`
+  with empty login AND empty name) has a documented test case, not a code path change beyond what's listed.
+
+## Numbers worth carrying into wall-cutover / board-import planning
+
+- Boards e2e: 8/8 (build round) → 11/11 (fix round), 0 flakes across both, but NOT safe to re-run against the
+  same live stack without a reset (see suite-design gap above).
+- App bundle: build round `assets/index-*.js` 1,906,267 B raw / 614,014 B gzipped; fix round 1,910,936 B raw /
+  615,756 B gzipped (+4,669 B / +1,742 B gzipped for the review fixes).
+- Unit tests: 219 (pre-phase-3) → 251 (build round, +32) → 297 (fix round, +46 more).
+- The nginx `Host`/`Origin` port mismatch (found here) and the phase-1 CSRF guard it interacts with are the
+  same mechanism — worth fixing together in `fleet-infra` before any origin that isn't port-443 is used for
+  further rehearsal or QA.
+- G-P3.5 (Tailscale Serve `via:"tailnet"` from an untagged device, and `via:"access"` after a real Access
+  login) is STILL unverified end-to-end by any agent — dev-woo is a tagged device and no interactive session can
+  mint an Access JWT. Both checks remain the founder's, not a build round's, to close — see the founderTest
+  below and collab-plan.md's "what is left".

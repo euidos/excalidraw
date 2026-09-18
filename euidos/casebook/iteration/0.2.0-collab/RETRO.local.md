@@ -270,3 +270,102 @@ read-only commands as a session-level side effect to report, not a second wall t
 - **live-artifact probe** — checking what a deployed bundle actually IS (its hash, a debug global's presence)
   rather than what the build pipeline that produced a candidate artifact reports; the only check in this round
   that caught the undeployed-fix gap.
+
+## Phase 3 (boards page and identity) — cycle shape
+
+One build round, shipped and unit/e2e-green against a throwaway rehearsal of the real
+`fleet-infra/stacks/euidos-internal` compose; a hate-stance adversarial review (18 findings: 2 MUST, 8+2
+SHOULD, 6 NICE) driven LIVE against that same rehearsal stack, not read-only inspection — every finding cites a
+reproduced browser action, a captured network call, or a live curl, the same discipline phase 1's review used
+for its two MUST findings; a fix round applied 20 of 22 applicable fixes and named the 2 skipped with reasons;
+a same-day cold-worktree resume re-ran the full stack from scratch and surfaced one more real gap (the e2e
+suite cannot be re-run against a live stack without a reset) that neither the build nor the fix round's own
+green suites could have shown, the same shape as phase 2's L6.
+
+## What earned reuse
+
+- **The rehearsal-before-touching-the-host discipline, now proven across three consecutive phases.** Phase 1
+  rehearsed the deploy; phase 2's cold-run resume rehearsed the build; phase 3's review AND its fix round both
+  ran the entire compose stack under a throwaway project name, on a loopback-only port, torn down with `-v`
+  every time. Zero contact with `euidos-internal` or the wall kiosk across all three phases of this whole
+  iteration. This is no longer "worth reusing" — it is now the iteration's default mode, and should be named as
+  a standing rule for phase 4+ rather than re-justified each time.
+- **A hate-stance review finding defects the nominal green e2e suite could not, for the third phase in a row.**
+  Both MUST findings (Back-button data loss, the `roomKey:""` open-affordance gap) are on interaction paths the
+  builder's own 8-test suite exercised in the HAPPY direction only (Back was never pressed mid-draw; the legacy
+  row's Copy link was tested, its Open button was not). Same shape as phase 1's L2 and phase 2's L5: a green
+  suite proves the paths it walks, not the ones adjacent to them.
+- **A real finding surfaced by RUNNING the thing, not by reading the diff.** The nginx `Host`/`Origin` port
+  mismatch was found because the e2e suite's own `POST /api/boards` 403'd on a non-standard port — the reviewer
+  reproduced it with a bare curl before writing it down, rather than reasoning about nginx config in the
+  abstract. Same discipline as phase 1's L2 lost-update reproduction and phase 2's L6 live-artifact probe: an
+  infrastructure defect this specific does not show up by reading `nginx.conf`.
+
+## What phase 4 / wall-cutover / board-import must know
+
+**G-P3.6 — The e2e boards suite is stateful and cannot be re-run against a live stack without a reset.**
+`euidos/e2e/boards/boards.spec.ts` assumes a fresh, empty Postgres volume (it says so at the top of the file);
+a second consecutive run against the SAME `boards-e2e` stack fails at "alice lands on an empty boards page"
+because run 1's rows are still there. This is a suite-design gap, not an app defect, but it means CI retries or
+a `rehearsal.sh up` left running between review passes WILL produce a false failure that looks like a real
+regression. Fix (not done, next round's job): a `TRUNCATE`/`DELETE` step in `rehearsal.sh`, or a global
+Playwright setup hook.
+
+**G-P3.7 — The nginx `Host $host` / `Origin` mismatch is real, reproduced, and NOT fixed.** Any future rehearsal,
+QA harness, or ephemeral environment that serves the app on a non-default port will trip phase 1's own CSRF
+guard on every write, because `proxy_set_header Host $host;` strips the port while `Origin` carries it.
+Production (both front doors on 443) never sees this. `fleet-infra/stacks/euidos-internal/nginx.conf` is one
+word away from closed (`$http_host` instead of `$host`) but is out of every phase-3 builder's file scope — carry
+this forward explicitly rather than re-discovering it the next time a rehearsal runs on a non-443 port.
+
+**G-P3.8 — The phase-1 RETRO L3 gate (a `/restore` route or admin view before delete ships) is STILL unmet, now
+with delete actually shipped in the UI staff will use.** Phase 3 built the confirm dialog to say so honestly
+(no undo, needs a database edit) and, in the fix round, made a save-into-a-deleted-board name the cause instead
+of showing a generic error — but neither substitutes for the route the phase-1 RETRO asked for BEFORE shipping
+delete. This is the third memo in this iteration to carry this row forward unclosed; it should not become a
+fourth without either the route landing or the founder explicitly accepting the dialog text as sufficient.
+
+**G-P3.9 — G-P3.5 (the two identity branches — `via:"tailnet"` from an untagged device, `via:"access"` after a
+real login) is STILL unverified end-to-end, across three phases now, and remains the one gate no agent can
+close.** Every rehearsal in this iteration (phase 1's deploy proof, phase 3's review and fix round) proves
+identity only up to the header-forgery level, because dev-woo is a tagged device and no non-interactive session
+can mint a real Cloudflare Access JWT. This is not a build-round task; it is a 2-minute founder walkthrough
+(see collab-plan.md's founder test) that should happen before or alongside the wall cutover, not be re-flagged
+a fourth time.
+
+**G-P3.10 — The wall's authorization model is ownership-blind, not identity-blind, and phase 4 (import /
+cutover) should design around the ACTUAL rule, not the naive one.** Delete is gated on `via !== "wall"`, not on
+who created the board — so ANY signed-in staff member can delete a board the wall itself created, and the wall
+can create boards nobody but a human can clean up if abandoned. This shape is fine at today's scale (a handful
+of internal boards) but a bulk import of the wall's history (deferred, see collab-plan.md) will multiply
+wall-created rows; whoever designs the import should decide up front whether that's still fine at N boards, not
+assume phase 3's "still fine" judgment scales.
+
+## Lessons
+
+**L8 — A stated harm in a review finding is worth re-checking against the actual authorization rule before
+applying the suggested fix, not just the finding's own framing.** The review's NICE finding on the wall's
+"New board" button reasoned from "rows only a signed-in person can remove" — but the fix round checked the
+backend's actual delete rule (`via !== "wall"`, not ownership) and found the premise false: any signed-in
+person can already remove ANY board, wall-created or not. The fix was correctly skipped, with the reasoning
+recorded, rather than applied on the strength of the finding's framing alone. Gate: a review finding's proposed
+fix should be checked against the code path it claims to guard, not accepted because the finding's prose sounds
+right — the same discipline phase 1's L2 applied to test claims applies equally to review claims.
+
+**L9 — Running a suite twice, not once, is what surfaced a suite-design gap three green single-runs had never
+shown.** The build round's 8/8 and the fix round's 11/11 were both first-and-only runs against a freshly-started
+stack; only the cold-worktree resume's explicit "run it again" step (mirroring phase 2's L6 cold-run discipline)
+hit the "second run against the same stack" case and found the suite cannot survive it. Gate: a memo step that
+verifies a rehearsal-backed e2e suite should include one deliberate SECOND invocation against the SAME stack
+instance, not just a fresh one — a single green run proves the happy path exists, not that the suite is
+reusable across CI retries or iterative review passes.
+
+## Vocabulary added this round (phase 3)
+
+- **ownership-blind vs. identity-blind authorization** — a rule gated on WHO you are (`via`) rather than WHO
+  created the resource; worth naming explicitly because a review finding phrased in ownership language
+  ("only X can remove it") can be flatly false against an identity-blind rule, and the mismatch is easy to miss
+  without checking the actual guard clause.
+- **suite-design gap** — a defect in the TEST HARNESS's own assumptions (here: no reset between runs) that
+  produces a false failure indistinguishable from an app regression on a second invocation; distinct from both
+  a shipped-code defect and a finding against the reviewed diff.

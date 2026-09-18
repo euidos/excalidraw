@@ -191,17 +191,115 @@ phase 3 and for anyone reading this plan later:
    `euidos/casebook/iteration/0.1.0-voice-areas/`) and are NOT closed by this
    phase (G-P2.5).
 
-## Phase 3 — boards page and identity
+## Phase 3 — boards page and identity — SHIPPED TO MASTER, NOT DEPLOYED (2026-09-18), two founder gates open
 
-1. `/boards` route (and the root when no `#room`/`#json` is present): list from
-   `GET /api/boards`, create (name prompt → `generateCollaborationLinkData()` →
-   `POST` → open), rename, delete with confirm, copy link. Plain React inside
-   the app, styled with its variables.
-2. Collaborator name = `/api/me` login (overrides the free-text username);
-   `updatedBy` recorded on every save.
-3. Acceptance: two users (two Playwright contexts with different identity
-   headers via the tailnet origin) create/open/rename/delete; the list orders
-   by last edit; a deleted board's link 404s.
+Code-complete and reviewed on `master` (4 unpushed commits: `952426e8`, `e2d2dcfa` build round;
+`3fb2a719`, `2eea29a7` review-fix round). `euidos-internal` still serves the phase-2 build — the deploy has not
+run. What landed, as facts for phase 4 and anyone reading this plan later:
+
+1. `excalidraw-app/boards/` is a new, self-contained module: a typed storage-API client, cached edge identity,
+   a pure route rule, and the boards page itself. It renders at `/boards` and at the bare origin `/`;
+   `#room=`, `#json=`, `#local` and `#addLibrary=` all still resolve to the editor, so the pre-existing local
+   scratch board stays reachable at `/#local`. Upstream cost is one import + one JSX element each in
+   `App.tsx`, `AppMainMenu.tsx` and `Collab.tsx` — the same "mount line, not a rewrite" bar phase 2 held for
+   the voice tool.
+2. The list is newest-edit-first from the backend's own ordering; create (name → `generateCollaborationLinkData()`
+   → `POST` → open), open (name is a real anchor, not a button), copy link, inline rename, delete behind a
+   real keyboard-trapped confirm dialog. Light+dark via upstream's own CSS variables, no new tokens.
+3. The collaborator name shown to peers is the edge identity (`/api/me` login, or "Wall") instead of a random
+   adjective-noun pair; the free-text "Your name" field in `ShareDialog` is read-only once an identity resolves,
+   so it can no longer be used to impersonate someone after joining.
+4. Founder's phase-3 decisions are honoured as written: all boards visible to all staff, no per-board
+   permissions, no external sharing, no "show on wall". G-P3.1 (wall gets 403 on write) is expressed by hiding
+   those controls for `via:"wall"` AND, after the fix round, asserted at the security layer in e2e (a
+   header-less PATCH/DELETE with an explicit `Origin` gets a real 403, not just hidden buttons). G-P3.2
+   (`roomKey:""` never hands out a broken link) covers ALL open affordances after the fix round (name, Open,
+   Copy), not only Copy as first shipped. G-P3.3 (`elementCount` stays the backend's) and G-P3.4 (same-origin +
+   `Content-Type: application/json` on every write) hold as designed.
+5. A hate-stance review against the LIVE build round found 18 findings (2 MUST — Back-button data loss,
+   the `roomKey:""` open-affordance gap — plus SHOULD/NICE); a fix round applied 20 of 22 applicable fixes.
+   Two are deliberately NOT applied: the wall keeps its "New board" button (the review's stated harm didn't
+   survive a check of the actual delete rule, which is `via !== "wall"`, not ownership — see RETRO L8), and
+   the phase-1 RETRO L3 gate (`/restore` route or admin view before delete ships) is STILL open — storage-backend
+   is out of every phase-3 builder's scope. Full detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,
+   EVIDENCE,RETRO}.local.md`.
+6. Tests: 297 unit (`yarn vitest run excalidraw-app`, was 251 pre-phase-3, +46 across the review-fix round);
+   `euidos/e2e/boards` 11/11 green (was 8) against a throwaway rehearsal of the real
+   `fleet-infra/stacks/euidos-internal` compose, published on `127.0.0.1:18099` only, torn down with `-v` every
+   time; `collab-smoke.mjs` and the full 27-gate voice suite both re-confirmed green on the same build.
+7. Real infra finding, out of scope to fix here: nginx's `proxy_set_header Host $host;` drops the port, so any
+   non-443 origin (like the rehearsal's own `127.0.0.1:18099`) 403s its own same-origin writes against
+   phase-1's CSRF guard — production is unaffected (both front doors are on 443). One word (`$http_host`) from
+   closed; `fleet-infra/stacks/euidos-internal/nginx.conf` is not a phase-3 file.
+8. Deploy not attempted (out of this task's scope, per instruction — the main loop deploys after this round,
+   same discipline as phase 2's deploy gate).
+
+## What is left
+
+**Blocking phase 4 planning, needs the founder (not another build round):**
+
+- **Wall cutover.** The kiosk (`100.102.3.47`) currently opens a bare origin, which is now the boards INDEX,
+  not a board — after cutover its URL must carry a `#room=` (or click through from the index), or the wall
+  displays a list instead of a canvas. Nothing has been changed on the kiosk; it has not been contacted by any
+  agent in this iteration.
+- **Board import.** The wall's existing local-static board (still on `whiteboard/` round 5) has no import path
+  into the new storage backend. A one-off script or an admin route needs to turn that board into a normal row
+  before or during cutover, and needs to decide what "created by" / "updated by" means for a board nobody in
+  the new identity model actually authored.
+- **The two identity branches (G-P3.5 / G-P3.9), open across all three phases of this iteration.** `via:"tailnet"`
+  from the founder's own untagged device at `https://euidos-internal.pony-bellatrix.ts.net/api/me`, and
+  `via:"access"` after a real login at `https://board.euidos.ai/api/me`, are both still proven only up to the
+  header-forgery level — no non-interactive agent session can mint a real Access JWT or run from an untagged
+  device. This is the 2-minute founder check below, not a task to route around with more agent-side header
+  injection.
+- **The phase-1 RETRO L3 restore gate**, now three memos old: either a `/restore` route / admin view lands
+  before staff rely on delete, or the founder explicitly accepts the confirm dialog's honesty (no undo, needs a
+  database edit) as sufficient.
+
+**Deferred features, not blocking, no owner yet:**
+
+- The `nginx $host`/`Origin` port-mismatch fix in `fleet-infra/stacks/euidos-internal/nginx.conf` (one word,
+  `$http_host`) — only matters for non-443 rehearsals/QA, not production, but will bite the next ephemeral
+  environment that isn't on port 443.
+- A `TRUNCATE`/reset step in `euidos/e2e/boards/rehearsal.sh` so the boards e2e suite can be re-run against a
+  live stack without a fresh volume — currently a false failure on the second consecutive run (RETRO G-P3.6).
+- Wall-created boards multiplying without an ownership-aware cleanup story once board import happens (RETRO
+  G-P3.10) — the current delete rule is identity-blind (`via !== "wall"`), not ownership-aware, which is fine
+  at today's scale and may not stay fine after import.
+- A larger type scale for the boards index at the wall's 1920x1080 viewport — deferred until the kiosk actually
+  opens the index (today it opens a board directly).
+- 0.1.0's own still-open rows (N13 kiosk real-mic re-measure, N17 native multi-point line conversion, N18 VAD
+  noise-floor seeding, N20 bound interim preview growth, N21 unreproduced toolbar-latch flake) — untouched by
+  phases 2 or 3, most blocked on the wall cutover itself (N13 specifically needs the kiosk's real microphone).
+
+## Founder test — 2-minute walkthrough on `https://board.euidos.ai`
+
+Do this in a normal browser tab, signed in through Cloudflare Access as usual.
+
+1. Open `https://board.euidos.ai`. **Expect**: a list titled "Boards", not the drawing canvas — your name
+   (your email) shown as the signed-in identity, and a "New board" button.
+2. Click "New board", type a name, confirm. **Expect**: it opens straight into a blank canvas; draw one shape.
+3. Send the same board to a colleague — copy the link (button on the boards list, or from the share dialog in
+   the editor) and have them open it on their own machine, signed in as themselves. **Expect**: their cursor
+   name is THEIR login, not a random word; your shape is visible to them within a couple seconds; anything they
+   draw appears on your screen too.
+4. Go back to the boards list (main menu → "Boards", or Back). **Expect**: your drawing is still there when you
+   reopen it — nothing you drew a moment ago should vanish. The list should show this board at the top, with a
+   "last edited by <colleague>" line if they drew something after you.
+5. Rename the board from the list (inline rename, no dialog). **Expect**: the name changes immediately; the
+   board does NOT jump to the top of the list just from a rename (only actual edits should reorder it).
+6. Delete the board (delete button → confirm). **Expect**: a plain-language warning that this cannot be undone
+   without a database edit — read it, it is accurate, there is no restore button yet. After confirming, the
+   board disappears from your list; the old link, if you still have it, should open to an empty canvas rather
+   than an error page.
+
+**Two identity checks** (open each in a browser, no special steps):
+
+- `https://board.euidos.ai/api/me` — should answer `{"login":"<your email>","name":"<your name>","via":"access"}`.
+- `https://euidos-internal.pony-bellatrix.ts.net/api/me` from your OWN (untagged) device on the tailnet —
+  should answer `{"login":"<your email>","name":"<your name>","via":"tailnet"}`, NOT `via:"wall"`. If it says
+  `"wall"`, your device is reading as an anonymous tailnet node rather than you personally — worth reporting
+  back, this is exactly the gate no agent could close.
 
 Phase order is strict; each phase ends with a review, a fix pass, a clean-tree
 cold run, and a casebook memo before the next starts.

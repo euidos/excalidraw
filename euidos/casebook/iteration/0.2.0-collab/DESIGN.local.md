@@ -265,3 +265,144 @@ through the voice module's own store.
   voice tool on, and the fix is cheap relative to a second review round.
 - Do not attempt the deploy from an agent session once the permission classifier refused it twice — the
   founder's own no-workaround rule applies to deploys as much as to any other disruptive host action (see RETRO).
+
+## Phase 3 — boards page and identity (as built)
+
+Two builder rounds: a build round that shipped the page against the phase-1/2 contract, then a hate-stance
+adversarial review that found 18 findings (2 MUST, 8 SHOULD, 6 NICE, plus 2 pure security/merge-surface findings
+folded in) against the LIVE rehearsal stack, followed by a fix round that applied 20 of the fixes and named the
+2 it deliberately skipped. Both rounds ran against a throwaway rehearsal of the real
+`fleet-infra/stacks/euidos-internal` compose (nginx + storage + postgres + room relay) under project name
+`boards-e2e`, published on `127.0.0.1:18099` only, never on `0.0.0.0` — the same "rehearse before touching the
+host" discipline phase 1's deploy stage established. Neither round touched `euidos-internal` or the wall kiosk;
+nothing here is deployed or pushed.
+
+## Thesis
+
+The boards page is a new, self-contained module (`excalidraw-app/boards/`) mounted from three one-line
+insertions in upstream files (`App.tsx`, `AppMainMenu.tsx`, `Collab.tsx`), exactly the "mount line, not a
+rewrite" pattern phase 2 used for the voice tool. It renders at `/boards` and at the bare origin `/`;
+`#room=`, `#json=`, `#local` and `#addLibrary=` all still resolve to the editor, so the pre-existing local
+scratch board stays reachable at `/#local`. The collaborator name shown to peers stops being a random
+adjective-noun pair and becomes the edge identity (`/api/me` login, or "Wall") — the identity the backend
+already stamps per phase-1's `via` order, now surfaced in the UI rather than only enforced server-side.
+
+## What was built (as-built)
+
+- `boards/api.ts` — a typed client over `/api/boards` and `/api/rooms`; every request is same-origin, JSON
+  content-type only when there is a body, ids percent-encoded into the path; errors map by status (401 → the
+  same `EuidosSessionError` the rest of the app recognizes via `isSessionError`, 403 → a distinct
+  `BoardsForbiddenError` that is explicitly NOT a session error so it doesn't trigger a reload prompt, 404/409/413
+  typed, a rejected fetch itself treated as a session error).
+- `boards/identity.ts` — one shared `/api/me` fetch per page load, cached, NOT cached on failure (so a
+  transient 401 doesn't wedge every caller); `via` values other than `"access"`/`"tailnet"` normalize to
+  `"wall"` (fail-closed for `canManageBoards`); the wall's display name is a fixed `"Wall"`.
+- `boards/route.ts` — the pure routing predicate (list vs. editor) and `hasLink()`, the gate behind G-P3.2's
+  "no broken link" requirement.
+- `boards/format.ts` — relative-time buckets ("3 min ago", "just now" for future clock-skew, "unknown" for
+  unparseable dates) and singularization for the "by X, N elements" line.
+- `boards/BoardsPage.tsx` — the list (newest-edit-first, per the backend's own ordering), create (name →
+  `generateCollaborationLinkData()` → `POST` → open), open, copy link, inline rename, delete behind a confirm
+  dialog, loading/empty/error states; keyboard-driveable; light+dark via upstream's own CSS variables
+  (`--color-primary`, `--island-bg-color`, etc.), no new design tokens introduced.
+- `boards/BoardsRoute.tsx` / `BoardsMenuItem.tsx` / `boards/index.ts` — the three upstream-facing seams, kept to
+  one import + one JSX element each in `App.tsx`/`AppMainMenu.tsx`. `Collab.tsx`'s seam is a leaf import
+  (`../boards/identity`, not the barrel) so the collab module does not drag the boards React tree/CSS into its
+  own dependency graph.
+- G-P2.10 housekeeping (decided by the main loop, not re-litigated here): `persist.ts` lost
+  `createPersister` / `loadInitialData` / `libraryAdapter` and everything that existed only to support them
+  (453 → 205 lines); `sweepGhostPlaceholders` and both its test files are untouched.
+
+## Review-driven fixes (fix round; see EVIDENCE for the finding→fix table)
+
+- **MUST — browser Back out of a live board no longer discards unsaved drawing.** `boards/leave.ts` is a new
+  scene-flush registry: `Collab.tsx` registers a flush function while mounted and unregisters it on unmount;
+  `BoardsRoute` detects the editor→boards direction and calls `leaveEditorForBoards()` (flush, then a REAL
+  navigation via `window.location.reload()`, which also closes the socket) instead of swapping React trees in
+  place. Root cause was a listener-ordering race: BoardsRoute's hashchange listener ran before App.tsx's own
+  (which only registers once `excalidrawAPI`/`collabAPI` exist), so React unmounted the editor before
+  `Collab.componentWillUnmount` — which neither saves nor calls `destroySocketClient` — could flush the pending
+  20 s save throttle.
+- **MUST — a `roomKey: ""` board (G-P3.2) no longer has ANY open affordance, not just no copy-link.** Previously
+  only "Copy link" was gated on `hasLink()`; the name button and "Open" still navigated to `#room=<id>,` (empty
+  key), which upstream's `getCollaborationLinkData` silently treats as no room and falls through to the
+  browser's OWN localStorage scratch scene — a private board rendered under someone else's name with no signal
+  anything was wrong. All three affordances (name, Open, Copy) now share one `hasLink()` gate; an unopenable row
+  reads "cannot be opened — no room key stored".
+- **SHOULD — the in-app "Boards" menu item flushes before navigating** instead of relying on `beforeunload`
+  (which only closes the socket, never saves, and pops the browser's own "Leave site?" prompt); `gotoBoards()` is
+  now async and shows a "Saving…" state first.
+- **SHOULD — the list refetches on focus/visibilitychange** plus a manual Refresh button, so a second person's
+  edit or delete does not sit invisible in a tab left open; a failed refresh never blanks an already-usable list.
+- **SHOULD — session-expired state now offers a working "Reload" action** (`window.location.reload()`) instead
+  of a "Try again" that can never succeed against a cross-origin Access login redirect a `fetch()` cannot follow.
+- **SHOULD — every request now times out** (`AbortSignal.timeout`, 15 s) and maps to a retryable
+  `BoardsTimeoutError`; "New board" is no longer disabled purely because the list is still loading.
+- **SHOULD — the delete confirm dialog is now a real keyboard modal**: Tab is trapped inside, Escape works from
+  a capture-phase document listener regardless of focus, backdrop mousedown closes it, focus returns to the
+  control that opened it.
+- **SHOULD — secondary row buttons (Open/Copy/Rename) get a real surface in light theme** — they previously
+  painted `#fff` on a `#ffffff` row with a transparent border and read as plain text; now
+  `--color-surface-high` + `--default-border-color` in both themes.
+- **SHOULD — a save into a deleted board names the cause.** `euidosStorage.ts` now raises a specific
+  `BoardDeletedError` on a `PUT /api/rooms` 404, so the editor's dialog says "this board was deleted" instead of
+  upstream's generic "Couldn't save to the backend database".
+- **SHOULD — board names are real anchors** (`<a href={boardLink}>`), so ctrl-click / middle-click / "copy link
+  address" work; the redundant "Open" button is gone.
+- **SHOULD — `applyEdgeIdentity` moved out of `Collab.tsx` into `boards/identity.ts`** as
+  `resolveCollaboratorName(currentUsername)`; the upstream file keeps one call, not a 28-line private method —
+  restoring the "mount line, not a rewrite" bar the review held phase 2 to as well.
+- **SHOULD — the "Your name" field in `ShareDialog` is read-only once an edge identity resolves**
+  (`boards/CollaboratorNameField.tsx`), closing the gap where the UI called the collaborator name "the edge
+  identity" while an upstream text field could still overwrite it to impersonate anyone after joining.
+- **SHOULD — `hasLink()` now enforces the LINK PARSER's rule, not the backend's.** The backend's
+  `ROOM_KEY_RE` accepts a wider alphabet and length range than upstream's `RE_COLLAB_LINK` /
+  `getCollaborationLinkData` (which further requires an exact 22-char key) — `hasLink()` was only checking
+  non-empty, so a key the backend would store but the app cannot parse rendered an enabled, silently-broken
+  Copy link.
+- **SHOULD — the wall's G-P3.1 403 is now asserted at the security layer**, not only as hidden buttons: the
+  e2e sends a header-less PATCH and DELETE with an explicit `Origin` and asserts 403 from the backend itself.
+- **SHOULD — `voice-tool-CLAUDE.md`'s spec and never-list no longer assert something false about the code**:
+  the three stale references to `createPersister`/`loadInitialData`/`libraryAdapter` as live exports are now
+  past tense, closing the "open decision" the never-list had carried since G-P2.10 landed.
+- **NICE fixes**: `displayNameFor()` returns "Wall" only for an identity the backend actually resolved as the
+  wall (not any unrecognized `via`, which now reads "Unknown"); `BoardsRoute`'s test short-circuit is now an
+  overridable prop, closing the unit-test coverage gap on the route rule itself; an emptied rename now says so
+  and keeps the field open instead of discarding silently, and notices get a dismiss control; `document.title`
+  is "Boards — euidos" while the index is mounted; a client-side filter (name + updatedBy) appears once there
+  is more than one board.
+
+## Not done, named and owned
+
+- **The phase-1 RETRO L3 gate is still unmet.** Delete ships without a `/restore` route or admin view; the
+  storage backend is outside every phase-3 builder's file scope. Mitigation is the confirm dialog's own text
+  (recovery needs a database edit; no undo) plus, after the fix round, a clearer message when a save lands on a
+  deleted board — neither is a substitute for the route the RETRO asked for.
+- **The wall's "New board" button is left in place, on purpose.** Hiding it was flagged as a possible fix but
+  explicitly NOT applied: `POST /api/boards` has no `requireNamedIdentity`, and the rows it creates are
+  deletable by ANY signed-in person (delete is gated on `via !== "wall"`, not on ownership) — the stated harm
+  ("only a signed-in person can remove it") does not hold up, and a meeting at the wall starting a board is a
+  legitimate use. Left for the founder to decide, not decided here.
+- **No larger type scale for the wall's 1920x1080 viewport.** The kiosk opens a board directly today, not the
+  index, and the deferred cutover (see collab-plan.md "what is left") is the point at which the index's layout
+  at kiosk scale would actually matter.
+- **nginx's `$host`/`$http_host` CSRF fragility, found and reproduced live, is explicitly not fixed here** —
+  `fleet-infra/stacks/euidos-internal/nginx.conf` is outside this task's file scope. `proxy_set_header Host
+  $host;` drops the port, so any origin with a non-default port (like the rehearsal's `127.0.0.1:18099`) 403s
+  its own same-origin writes because the backend compares a portless `Host` against a ported `Origin`.
+  Production is unaffected today (both front doors are on 443, so `Origin` carries no port either) but the
+  mismatch is real and one word (`$http_host`) away from closed. `euidos/e2e/boards/rehearsal.sh` patches a
+  COPY of the config for its own throwaway stack and documents why at the top of the script; the real file was
+  never touched.
+
+## Contestable decisions (settled for phase 3)
+
+- Fix the Back-button data-loss bug with a real navigation (reload) rather than a more surgical in-place
+  teardown-then-remount — a reload is slower by a beat but cannot race listener ordering the way the original
+  hashchange-only approach did, and it is the same mechanism a closed tab already uses.
+- Keep the wall's "New board" button rather than hiding it pending a founder call — the review's own stated
+  harm didn't survive a second look once delete's actual authorization rule (`via !== "wall"`, not ownership)
+  was checked, so removing a legitimate use case to guard against a harm that doesn't exist was rejected.
+- Tighten `hasLink()` to the LINK PARSER's rule instead of loosening the backend's `ROOM_KEY_RE` to match it —
+  the app-side fix is one line and needs no schema/deploy change; narrowing the backend is deferred (noted, not
+  done, since storage-backend is out of scope this round).
