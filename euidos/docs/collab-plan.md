@@ -53,21 +53,27 @@ noted. Errors: `{error, message}` with 4xx/5xx.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/health` | `{ok:true, db:"ok"}` — no auth |
+| `GET /api/health` | `{ok:true, db:"ok"}` — no auth; `503 {ok:false, db:"error"}` when Postgres is unreachable |
 | `GET /api/me` | `{login, name, via:"access"\|"tailnet"\|"wall"}` |
-| `GET /api/boards` | `{boards:[{id,name,roomKey,createdBy,createdAt,updatedBy,updatedAt,elementCount}]}` (not deleted, newest edit first) |
+| `GET /api/boards` | `{boards:[{id,name,roomKey,createdBy,createdAt,updatedBy,updatedAt,elementCount}]}` (not deleted, newest edit first); `elementCount` is a stored column (live, non-tombstoned elements), written on every save |
 | `POST /api/boards` `{id,roomKey,name}` | client generates `id`+`roomKey` with the app's `generateCollaborationLinkData()`; 201 board; 409 if id exists |
-| `PATCH /api/boards/:id` `{name}` | rename |
-| `DELETE /api/boards/:id` | soft delete (`deleted_at`), 204 |
+| `PATCH /api/boards/:id` `{name}` | rename; **`via:"wall"` → 403** (phase-1 review fix; wall can still read/save the room it displays) |
+| `DELETE /api/boards/:id` | soft delete (`deleted_at`), 204; **`via:"wall"` → 403**; recovery is `UPDATE boards SET deleted_at = NULL` on the host — no restore route yet (phase 3 should add one before shipping delete in the UI) |
 | `GET /api/rooms/:id` | `{elements, version, updatedAt}`; 404 if never saved |
-| `PUT /api/rooms/:id` `{elements}` | full-scene save (≤ 20 MiB); creates an "Untitled" board row if none (a `#room=` link opened before being listed); returns `{version, updatedAt}` |
-| `GET /api/files/:id` | raw bytes, `Content-Type` from the row; 404 |
+| `PUT /api/rooms/:id` `{elements, baseVersion?}` | full-scene save (≤ 20 MiB); **optional `baseVersion`, checked with `AND version = $baseVersion`, answers 409 on a stale write** (phase-1 review fix for a lost-update race — the client retries GET→reconcile→PUT up to 5× on 409); creates an "Untitled" board row only when the elements are non-empty (an idle `#room=` link with nothing drawn no longer creates a row); returns `{version, updatedAt}` |
+| `GET /api/files/:id` | raw bytes; `Content-Type` is coerced to a small raster-image allowlist or `application/octet-stream` (phase-1 fix — a replayed caller-supplied type was a stored-XSS path), always with `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`; 404 |
 | `PUT /api/files/:id?board=<id>` | raw bytes ≤ 4 MiB (`FILE_UPLOAD_MAX_BYTES`), 201 |
-| `POST /api/v2/scenes` → `{id}`, `GET /api/v2/scenes/:id` → bytes | opaque blobs for `#json=` share links (upstream `exportToBackend`) |
+| `POST /api/v2/scenes` → `{id}`, `GET /api/v2/scenes/:id` → bytes | opaque blobs for `#json=` share links (upstream `exportToBackend`); same content-type/CSP hardening as files; a 413 carries `error_class: "RequestTooLargeError"` so the app's existing "too big" branch fires |
+
+State-changing requests (`POST`/`PUT`/`PATCH`/`DELETE`) are rejected 403 when `Sec-Fetch-Site` is cross-site, or
+`Origin` is present and does not match the request host (CSRF guard — tailnet identity is ambient, carried by no
+cookie a browser could withhold); the JSON routes also require `Content-Type: application/json` (415 otherwise).
+A plain `fetch()` from the app already satisfies both; a cross-origin dev harness will not.
 
 Tables: `boards(id text pk, name, room_key, created_by, created_at, updated_by, updated_at, deleted_at)`,
-`scenes(board_id pk → boards, elements jsonb, version int, updated_at)`,
-`files(id text pk, board_id, content_type, bytes bytea, created_at)`,
+`scenes(board_id pk → boards, elements json, version int, updated_at, element_count int)` — **`elements` is
+`json`, not `jsonb`** (phase-1 fix, migration `002`: `jsonb` rejects a literal NUL byte in text content, `json`
+does not) —, `files(id text pk, board_id, content_type, bytes bytea, created_at)`,
 `blobs(id text pk, bytes bytea, created_at)`, `schema_migrations`. Migrations are
 SQL files applied at start-up, idempotent.
 
@@ -82,6 +88,14 @@ Identity resolution in the backend, in this order:
 3. else 401.
 
 ## Phase 1 — infrastructure and persistence (no voice, no boards page)
+
+**Status: shipped and deployed** (2026-09-18; fork `master` @ `cff7269f`, fleet-infra `main` @ `dd22793`, both
+committed and NOT pushed). Acceptance below passed 3/3 live against the tailnet origin; a security/correctness
+review found 2 MUST and 4 SHOULD defects, all fixed and redeployed before this status line was written. Full
+detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,EVIDENCE,RETRO}.local.md`. Still open, needs the founder
+(not an agent): confirm `via:"tailnet"` from an untagged personal device at
+`https://euidos-internal.pony-bellatrix.ts.net/api/me`, and `via:"access"` after a real login at
+`https://board.euidos.ai/api/me` — both are proven only up to the edge from agent-accessible boxes.
 
 1. `euidos/storage-backend/`: service + migrations + Dockerfile + tests
    (integration tests against a throwaway Postgres container on dev-woo).
