@@ -139,6 +139,9 @@ import { useSimulatedCollaborators } from "./debugCollaborators";
 import { AIComponents } from "./components/AI";
 import { ExcalidrawPlusIframeExport } from "./ExcalidrawPlusIframeExport";
 
+import { VoiceTool } from "./voice/VoiceTool";
+import { sweepGhostPlaceholders } from "./voice/persist";
+
 import "./index.scss";
 
 import { ExcalidrawPlusPromoBanner } from "./components/ExcalidrawPlusPromoBanner";
@@ -559,7 +562,15 @@ const ExcalidrawWrapper = () => {
 
     initializeScene({ collabAPI, excalidrawAPI }).then(async (data) => {
       loadImages(data, /* isInitialLoad */ true);
-      initialStatePromiseRef.current.promise.resolve(data.scene);
+      // Voice scaffolding (region markers, placeholder frames, interim previews) is litter the moment the
+      // controller that owned it is gone, so every LOAD path sweeps it — here for the local/shared-link scene,
+      // and in Collab.initializeRoom for the collaborative one (collab-plan phase 2 / RETRO G-P2.2).
+      initialStatePromiseRef.current.promise.resolve(
+        data.scene && {
+          ...data.scene,
+          elements: sweepGhostPlaceholders(data.scene.elements ?? []),
+        },
+      );
     });
 
     const onHashChange = async (event: HashChangeEvent) => {
@@ -578,9 +589,11 @@ const ExcalidrawWrapper = () => {
           loadImages(data);
           if (data.scene) {
             excalidrawAPI.updateScene({
-              elements: restoreElements(data.scene.elements, null, {
-                repairBindings: true,
-              }),
+              elements: sweepGhostPlaceholders(
+                restoreElements(data.scene.elements, null, {
+                  repairBindings: true,
+                }),
+              ),
               appState: restoreAppState(data.scene.appState, null),
               captureUpdate: CaptureUpdateAction.IMMEDIATELY,
             });
@@ -1239,6 +1252,12 @@ const ExcalidrawWrapper = () => {
           />
         )}
       </Excalidraw>
+      {/*
+       * The voice tool: a sibling of <Excalidraw>, because its settings panel deliberately renders outside the
+       * .excalidraw subtree (top-left, under the main menu). It injects its own toolbar button into the editor's
+       * toolbar row and takes nothing from the app but the imperative API.
+       */}
+      <VoiceTool excalidrawAPI={excalidrawAPI} />
     </div>
   );
 };

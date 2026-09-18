@@ -14,6 +14,9 @@ import type { Theme } from "@excalidraw/element/types";
 import { LanguageList } from "../app-language/LanguageList";
 import { isExcalidrawPlusSignedUser } from "../app_constants";
 
+import { voiceSettingsIcon } from "../voice/settings-panel";
+import { openVoiceSettings } from "../voice/VoiceTool";
+
 import { saveDebugState } from "./DebugCanvas";
 
 export const AppMainMenu: React.FC<{
@@ -40,6 +43,20 @@ export const AppMainMenu: React.FC<{
       <MainMenu.DefaultItems.SearchMenu />
       <MainMenu.DefaultItems.Help />
       <MainMenu.DefaultItems.ClearCanvas />
+      <MainMenu.Separator />
+      {/*
+       * Own group: the voice tool is this fork's addition, not one of the canvas actions above. The founder asked
+       * for it next to Open / Save to / Reset the canvas rather than as a floating control (voice casebook 0.1.0,
+       * round 4b). The panel itself lives outside the editor, so this reaches it through the voice module's own
+       * one-value store instead of a prop threaded down from ExcalidrawWrapper.
+       */}
+      <MainMenu.Item
+        icon={voiceSettingsIcon}
+        data-testid="menu-voice-settings"
+        onSelect={() => openVoiceSettings()}
+      >
+        Voice settings…
+      </MainMenu.Item>
       <MainMenu.Separator />
       <MainMenu.ItemLink
         icon={ExcalLogo}

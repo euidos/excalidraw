@@ -1,0 +1,13 @@
+{
+  "name": "@euidos/e2e-voice",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Voice-tool gates (0.1.0's 27 Playwright gates) against a BUILD of excalidraw-app and the real STT server.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

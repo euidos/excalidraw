@@ -5,3 +5,4 @@ test-results/
 # this sub-project is npm and its lockfile pins the browser build that the
 # shared ~/.cache/ms-playwright download must match.
 !package-lock.json
+playwright-report/

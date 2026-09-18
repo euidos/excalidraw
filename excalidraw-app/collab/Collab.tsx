@@ -88,6 +88,7 @@ import {
   saveUsernameToLocalStorage,
 } from "../data/localStorage";
 import { resetBrowserStateVersions } from "../data/tabSync";
+import { sweepGhostPlaceholders } from "../voice/persist";
 
 import { collabErrorIndicatorAtom } from "./CollabError";
 import Portal from "./Portal";
@@ -758,11 +759,17 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       this.excalidrawAPI.resetScene();
 
       try {
-        const elements = await loadFromFirebase(
+        const stored = await loadFromFirebase(
           roomLinkData.roomId,
           roomLinkData.roomKey,
           this.portal.socket,
         );
+        // Voice scaffolding a peer left behind (region markers, placeholder frames, interim previews) is swept on
+        // every LOAD path, not only on a local reload: the collaborative scene is the one the voice controller
+        // mutates now, and a persisted ghost outlives the session that made it (collab-plan phase 2 / G-P2.2).
+        // Deliberately NOT in _reconcileElements: that is the per-frame remote path, where a peer watching
+        // someone else's live interim preview is the intended behaviour.
+        const elements = stored && sweepGhostPlaceholders(stored);
         if (elements) {
           this.setLastBroadcastedOrReceivedSceneVersion(
             getSceneVersion(elements),
