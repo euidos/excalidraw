@@ -81,7 +81,7 @@ import {
   loadFromFirebase,
   saveFilesToFirebase,
   saveToFirebase,
-} from "../data/firebase";
+} from "../data/euidosStorage";
 import {
   importUsernameFromLocalStorage,
   saveUsernameToLocalStorage,
@@ -531,9 +531,14 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
     try {
       this.portal.socket = this.portal.open(
-        socketIOClient(import.meta.env.VITE_APP_WS_SERVER_URL, {
-          transports: ["websocket", "polling"],
-        }),
+        // one static build serves both origins: default the relay to the
+        // origin the app was loaded from (nginx proxies /socket.io/)
+        socketIOClient(
+          import.meta.env.VITE_APP_WS_SERVER_URL || window.location.origin,
+          {
+            transports: ["websocket", "polling"],
+          },
+        ),
         roomId,
         roomKey,
       );

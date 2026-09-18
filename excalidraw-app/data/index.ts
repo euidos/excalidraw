@@ -36,7 +36,7 @@ import {
 } from "../app_constants";
 
 import { encodeFilesForUpload } from "./FileManager";
-import { saveFilesToFirebase } from "./firebase";
+import { saveFilesToFirebase } from "./euidosStorage";
 
 import type { WS_SUBTYPES } from "../app_constants";
 
