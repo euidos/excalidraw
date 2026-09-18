@@ -219,8 +219,8 @@ profile's storage for `http://127.0.0.1:8765`, not in `dist/`.
 Design, evidence and references for a cycle live in `.re0/iteration/<version>-<name>/` — here
 `.re0/iteration/0.1.0-voice-areas/`: `DESIGN.local.md` (thesis, scope, gates G1–G8, the round-2 changes R1–R7 and
 the round-4 gates G9–G12), `EVIDENCE.local.md` (one row per gate, met only with proof from the real surface, plus
-the **open-rows table** that is the actual backlog), `RETRO.local.md` (lessons L1–L13 and the next-cycle gates,
-currently N9, N13, N15–N19 — N2e closed round 4c), `WORKFLOW.local.md` (how each round was run, incl. which model
+the **open-rows table** that is the actual backlog), `RETRO.local.md` (lessons L1–L21 and the next-cycle gates,
+currently N9, N13, N15–N22 — N2e closed round 4c), `WORKFLOW.local.md` (how each round was run, incl. which model
 class did which stage), `REF-*.local.md` (library internals, hosts, the round-1 hate pass). Every decision and
 every declared risk exits a cycle as a gate row with a proof path or an explicit "accepted, not tested" line —
 and an accepted line needs a named owner and the round it is re-decided in, because round 3 spent its whole

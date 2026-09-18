@@ -249,7 +249,27 @@ this round's memo must preserve the fixer's own labels, not re-flatten them.
   but it is the kind of "accepted" row L9/N14 says needs a name and a date, not just a mention.
 - Carried forward, still open: **N13 Kiosk re-measure** — real-mic cold start, suspend recovery, WAV cut accuracy
   on the panel; round 4 touched neither `capture.ts` nor `vad.ts`'s audio-graph internals, so this is unchanged
-  since round 3 and remains the only gate standing between the audio path and "proven" (L8).
+  since round 3 and remains the only gate standing between the audio path and "proven" (L8). Round 5 adds a second
+  item to the same gate: the 45 % `voiceInterim` preview has never been looked at on the wall at viewing distance —
+  exactly the class of defect the round-4 persona lens existed to catch, and nobody has run that lens on round 5.
+- **N20 Bound interim, unbound risk** — `fit.commitInterim` previews are BOUND to the founder's marker (kept
+  deliberately, round 5b: an unbound pair with `containerId === null` is a hazard `commitInterim`'s own comment
+  refuses). The unproven risk is the other direction: a transcript that does not fit even at the floor font size
+  could make the library grow the container the founder drew, mid-take, before the sentence is even final.
+  **Accepted, owner: main loop, re-decide round 6** — needs one real-surface measurement (a region deliberately too
+  small for a long interim sentence) before the unbind-at-preview/rebind-at-`resetPlaceholder` refactor is worth
+  doing; round 5b explicitly declined it as a design decision, not a patch.
+- **N21 Flake with no trace** — `test/e2e/voice.spec.ts`'s "toolbar latch" gate went red once in three full 27-test
+  runs on round 5b's tree (green 3/3 in isolation, 6.9–7.0 s each), and the failing run's trace was overwritten
+  before anyone looked, because a later run wiped `test-results/artifacts` first. **Unmet, owner: main loop**: rerun
+  with `--trace on`, keep the artifact, and do not fold this gate back into "green" from the isolation runs alone —
+  a flake that cannot be diagnosed from evidence is a red gate wearing a green label (L18's sibling: a claim needs
+  the artifact, not the retry).
+- **N22 Sweep vs. in-flight take** — the disarm sweep ("nothing was said in this region") and "the founder erased
+  this region mid-take" (G18/G19, round 5b) now produce the SAME outcome — the words are dropped — but only the
+  erase path has a gate. A region the disarm sweeps while one of its utterances is still in flight silently drops
+  those words on arrival, consistent with round 5's behaviour for the same region if it had simply been erased, but
+  untested: no gate drives "disarm mid-take" the way G18 drives "Ctrl+Z mid-take". **Unmet, owner: main loop.**
 - Carried forward unchanged: **N8 evidence integrity** (retries 0, log at the cited path, every path verified).
 
 ## Vocabulary for the next agent
