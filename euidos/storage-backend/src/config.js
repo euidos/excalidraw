@@ -13,8 +13,6 @@ export function loadConfig(env = process.env) {
       database: env.PG_NAME ?? "boards",
       password: env.PG_PASSWORD ?? "",
     },
-    accessAud: env.ACCESS_AUD ?? "",
-    accessTeamDomain: env.ACCESS_TEAM_DOMAIN ?? "",
     maxSceneBytes: int(env.MAX_SCENE_BYTES, 20 * 1024 * 1024),
     maxFileBytes: int(env.MAX_FILE_BYTES, 4 * 1024 * 1024),
   };

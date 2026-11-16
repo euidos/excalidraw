@@ -40,7 +40,7 @@ export type Board = {
   elementCount: number;
 };
 
-export type Via = "access" | "tailnet" | "wall";
+export type Via = "login" | "tailnet" | "wall";
 
 /** `GET /api/me` — who the EDGE says we are; never a client-side claim. */
 export type Identity = {
@@ -163,7 +163,7 @@ const errorFor = (status: number, payload: unknown): Error => {
   const message = messageOf(payload, `Request failed (${status})`);
   switch (status) {
     // 401 is the only status that means "you are no longer signed in". A
-    // Cloudflare Access session that expired answers the app's fetch this way
+    // login session that expired answers the app's fetch this way
     // (or fails it outright, handled below) and nothing works again until the
     // page is reloaded through the login redirect.
     case 401:
@@ -184,7 +184,7 @@ const errorFor = (status: number, payload: unknown): Error => {
 /**
  * Every boards-API call goes through here.
  *
- * A rejected `fetch()` on a same-origin `/api` path is either the Access login
+ * A rejected `fetch()` on a same-origin `/api` path is either the login
  * redirect failing the fetch's CORS check or the origin being down; both are
  * fixed by reloading, and both are reported as the same `EuidosSessionError`
  * the collab save path raises — so one `isSessionError()` check covers the app.

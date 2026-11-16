@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
 
-import { AUD, makeAccessSigner, startTestServer } from "./helpers.js";
+import { startTestServer } from "./helpers.js";
 
 describe("health and identity", () => {
   test("GET /api/health needs no identity and reports the db", async () => {
@@ -20,6 +20,35 @@ describe("health and identity", () => {
     }
   });
 
+  test("login listener + X-authentik-email -> via login, name from X-authentik-name", async () => {
+    const { call } = await startTestServer();
+    const res = await call("/api/me", {
+      identity: "login",
+      headers: { "x-authentik-email": "boss@euidos.ai", "x-authentik-name": "Boss" },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { login: "boss@euidos.ai", name: "Boss", via: "login" });
+  });
+
+  test("login listener without a name falls back to the email", async () => {
+    const { call } = await startTestServer();
+    const res = await call("/api/me", { identity: "login" });
+    assert.deepEqual(await res.json(), {
+      login: "staff@euidos.ai",
+      name: "staff@euidos.ai",
+      via: "login",
+    });
+  });
+
+  test("login listener without an email -> 401, even with tailnet headers", async () => {
+    const { call } = await startTestServer();
+    const res = await call("/api/me", {
+      identity: "none",
+      headers: { "x-euidos-listener": "login", "tailscale-user-login": "spoof@euidos.ai" },
+    });
+    assert.equal(res.status, 401);
+  });
+
   test("tailnet listener + Tailscale-User-Login -> via tailnet", async () => {
     const { call } = await startTestServer();
     const res = await call("/api/me", {
@@ -35,57 +64,25 @@ describe("health and identity", () => {
     assert.deepEqual(await res.json(), { login: "wall", name: "Wall", via: "wall" });
   });
 
-  test("a listener marker other than 'tailnet' is untrusted -> 401", async () => {
+  test("X-authentik-* on the tailnet listener is ignored", async () => {
+    const { call } = await startTestServer();
+    const res = await call("/api/me", {
+      identity: "wall",
+      headers: { "x-authentik-email": "spoof@euidos.ai", "x-authentik-name": "Spoof" },
+    });
+    assert.deepEqual(await res.json(), { login: "wall", name: "Wall", via: "wall" });
+  });
+
+  test("an unknown listener marker is untrusted -> 401", async () => {
     const { call } = await startTestServer();
     const res = await call("/api/me", {
       identity: "none",
-      headers: { "x-euidos-listener": "tunnel", "tailscale-user-login": "spoof@euidos.ai" },
+      headers: {
+        "x-euidos-listener": "tunnel",
+        "tailscale-user-login": "spoof@euidos.ai",
+        "x-authentik-email": "spoof@euidos.ai",
+      },
     });
     assert.equal(res.status, 401);
-  });
-
-  test("a valid Access JWT -> via access, login = email claim", async () => {
-    const { jwks, sign } = await makeAccessSigner();
-    const { call } = await startTestServer({ jwks });
-    const res = await call("/api/me", {
-      identity: "none",
-      headers: { "cf-access-jwt-assertion": await sign({ email: "boss@euidos.ai", name: "Boss" }) },
-    });
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { login: "boss@euidos.ai", name: "Boss", via: "access" });
-  });
-
-  test("the Access JWT wins over tailnet headers on the same request", async () => {
-    const { jwks, sign } = await makeAccessSigner();
-    const { call } = await startTestServer({ jwks });
-    const res = await call("/api/me", {
-      headers: { "cf-access-jwt-assertion": await sign({ email: "boss@euidos.ai" }) },
-    });
-    assert.equal((await res.json()).via, "access");
-  });
-
-  test("wrong aud, wrong issuer, bad signature and expiry are all rejected", async () => {
-    const { jwks, sign } = await makeAccessSigner();
-    const other = await makeAccessSigner({ kid: "other-key" });
-    const { call } = await startTestServer({ jwks });
-    const cases = [
-      await sign({}, { audience: "not-our-aud" }),
-      await sign({}, { issuer: "https://evil.cloudflareaccess.com" }),
-      await other.sign({}),
-      "not.a.jwt",
-    ];
-    for (const token of cases) {
-      const res = await call("/api/me", {
-        identity: "none",
-        headers: { "cf-access-jwt-assertion": token },
-      });
-      assert.equal(res.status, 401, token.slice(0, 24));
-    }
-    // sanity: the same helper with the right aud does pass
-    const ok = await call("/api/me", {
-      identity: "none",
-      headers: { "cf-access-jwt-assertion": await sign({}, { audience: AUD }) },
-    });
-    assert.equal(ok.status, 200);
   });
 });

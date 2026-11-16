@@ -3,7 +3,7 @@ import http from "node:http";
 
 import { loadConfig } from "./config.js";
 import { createPool, migrate, waitForDb } from "./db.js";
-import { createIdentityResolver, IdentityError } from "./identity.js";
+import { resolveIdentity, IdentityError } from "./identity.js";
 
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const ROOM_KEY_RE = /^[A-Za-z0-9_\-+/=]{0,256}$/;
@@ -230,7 +230,7 @@ function requireName(value) {
   return name;
 }
 
-export function createRequestHandler({ pool, config, resolveIdentity, log = console.log }) {
+export function createRequestHandler({ pool, config, log = console.log }) {
   const routes = [];
   const route = (method, pattern, handler, opts = {}) =>
     routes.push({ method, pattern, handler, ...opts });
@@ -497,7 +497,7 @@ export function createRequestHandler({ pool, config, resolveIdentity, log = cons
 
       let identity = null;
       if (!matched.anonymous) {
-        identity = await resolveIdentity(req);
+        identity = resolveIdentity(req);
         login = identity.login;
       }
       const params = pathname.match(matched.pattern).slice(1);
@@ -532,11 +532,7 @@ export async function main() {
   const pool = createPool(config.pg);
   await waitForDb(pool);
   await migrate(pool);
-  const resolveIdentity = createIdentityResolver({
-    aud: config.accessAud,
-    teamDomain: config.accessTeamDomain,
-  });
-  const server = createServer({ pool, config, resolveIdentity });
+  const server = createServer({ pool, config });
   await new Promise((resolve) => server.listen(config.port, "0.0.0.0", resolve));
   console.log(`boards-storage listening on :${config.port}`);
 

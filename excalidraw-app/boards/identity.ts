@@ -1,15 +1,15 @@
 /**
  * Who the EDGE says we are.
  *
- * `GET /api/me` resolves identity from the Cloudflare Access JWT (public
- * origin) or from the `Tailscale-User-Login` header nginx's tailnet listener
- * passes through; a tagged device (the wall PC) carries neither and comes back
+ * `GET /api/me` resolves identity from the `X-authentik-email` header the login
+ * proxy sets (public origin) or from the `Tailscale-User-Login` header nginx's
+ * tailnet listener passes through; a tagged device (the wall PC) carries neither and comes back
  * as `via:"wall"`. Nothing here is a client-side claim — the app cannot choose
  * an identity, it can only ask which one it already has.
  *
  * Cached for the page's lifetime because three call sites want it (the boards
  * list, the collaborator name, the rename/delete affordances) and it cannot
- * change without a reload: the Access cookie and the Serve headers are both
+ * change without a reload: the login session and the Serve headers are both
  * fixed for the document. A FAILED lookup is not cached, so a lost network
  * does not permanently mark the session dead.
  */
@@ -27,7 +27,7 @@ let pending: Promise<Identity> | null = null;
 const normalize = (raw: Identity): Identity => ({
   login: typeof raw?.login === "string" ? raw.login : "",
   name: typeof raw?.name === "string" ? raw.name : "",
-  via: raw?.via === "access" || raw?.via === "tailnet" ? raw.via : "wall",
+  via: raw?.via === "login" || raw?.via === "tailnet" ? raw.via : "wall",
 });
 
 export const getIdentity = (): Promise<Identity> => {

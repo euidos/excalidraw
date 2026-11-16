@@ -2,7 +2,7 @@
 
 The persistence layer for the euidos collaborative whiteboard: board index,
 scenes, image files and `#json=` share blobs in PostgreSQL. It replaces
-Firebase in `excalidraw-app/`. Node 22, ESM, two dependencies (`pg`, `jose`).
+Firebase in `excalidraw-app/`. Node 22, ESM, one dependency (`pg`).
 
 The contract it implements is fixed by `euidos/docs/collab-plan.md`; the
 platform rules it lives under are `fleet-infra/docs/internal-platform-notes.md`.
@@ -15,7 +15,7 @@ Everything except `/api/health` needs an identity. JSON unless noted; errors are
 | Route | Purpose |
 | --- | --- |
 | `GET /api/health` | `{ok:true, db:"ok"}` (503 + `{ok:false,db:"error"}` if the db is down) — no auth |
-| `GET /api/me` | `{login, name, via:"access"\|"tailnet"\|"wall"}` |
+| `GET /api/me` | `{login, name, via:"login"\|"tailnet"\|"wall"}` |
 | `GET /api/boards` | `{boards:[…]}` — not deleted, newest edit first |
 | `POST /api/boards` `{id,roomKey,name}` | 201 board, 409 if the id exists |
 | `PATCH /api/boards/:id` `{name}` | rename, 200 board, 404 if unknown/deleted, **403 for the wall** |
@@ -74,25 +74,23 @@ Behaviours worth knowing:
 
 ## Identity — what is trusted, and why
 
-Resolution order (`src/identity.js`), exactly as the plan fixes it:
+Resolution order (`src/identity.js`):
 
-1. `Cf-Access-Jwt-Assertion` present → verified with `jose` against the team
-   JWKS (`https://$ACCESS_TEAM_DOMAIN/cdn-cgi/access/certs`, cached in process,
-   refetched when a `kid` is unknown), `aud` must equal `ACCESS_AUD` and `iss`
-   the team domain → `via:"access"`, login = the `email` claim (`common_name`
-   for service tokens). A present-but-invalid token is a 401, never a fallback.
-2. else `X-Euidos-Listener: tailnet` — set by nginx's tailnet server block only,
-   and stripped from client requests on both blocks → `Tailscale-User-Login`
-   present → `via:"tailnet"`; absent (a tagged device, i.e. the wall PC) →
-   `via:"wall"`, login `wall`. Any other value of the header is untrusted and
-   ignored.
-3. else 401.
+1. `X-Euidos-Listener: login` — set by nginx's `:80` block only, which only the
+   login server's Authentik outpost can reach → `X-authentik-email` present →
+   `via:"login"`, login = the email, name = `X-authentik-name` (or the email).
+   That listener without an email is a 401.
+2. else `X-Euidos-Listener: tailnet` — set by nginx's tailnet server block only
+   → `Tailscale-User-Login` present → `via:"tailnet"`; absent (a tagged device,
+   i.e. the wall PC) → `via:"wall"`, login `wall`.
+3. else 401. Any other value of the marker header is untrusted and ignored.
 
-So the service never reads a Tailscale header on the tunnel listener and never
-trusts `Cf-Access-Authenticated-User-Email` (convenience, not proof). If nginx
-ever forwarded a client-supplied `X-Euidos-Listener: tailnet`, that would be the
-whole authentication — the two nginx server blocks are part of this security
-boundary.
+nginx sets `X-Euidos-Listener` unconditionally on both blocks (overwriting any
+client copy) and blanks the other listener's identity headers, so the service
+never reads a Tailscale header on the login listener nor an `X-authentik-*`
+header on the tailnet one. If nginx ever forwarded a client-supplied
+`X-Euidos-Listener`, that would be the whole authentication — the two nginx
+server blocks are part of this security boundary.
 
 ## Environment
 
@@ -100,8 +98,6 @@ boundary.
 | --- | --- | --- |
 | `PORT` | `3000` | listen port |
 | `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_NAME` / `PG_PASSWORD` | `db` / `5432` / `boards` / `boards` / — | connection |
-| `ACCESS_AUD` | — | the Access application's aud tag (public, not a secret) |
-| `ACCESS_TEAM_DOMAIN` | — | e.g. `euidos.cloudflareaccess.com` |
 | `MAX_SCENE_BYTES` | `20971520` (20 MiB) | `PUT /api/rooms/:id` and `POST /api/v2/scenes` |
 | `MAX_FILE_BYTES` | `4194304` (4 MiB) | `PUT /api/files/:id` |
 
@@ -146,8 +142,7 @@ server proxies `/api` to it (`excalidraw-app/vite.config.mts`):
 docker run --rm -d --name boards-dev-db -p 127.0.0.1:55432:5432 -e POSTGRES_PASSWORD=test postgres:16-alpine
 npm ci
 PG_HOST=127.0.0.1 PG_PORT=55432 PG_USER=postgres PG_NAME=postgres PG_PASSWORD=test \
-ACCESS_AUD=<aud tag> ACCESS_TEAM_DOMAIN=euidos.cloudflareaccess.com \
-  node src/server.js
+node src/server.js
 ```
 
 Image (built on dev-woo, shipped with `docker save | ssh root@euidos-internal docker load`):
@@ -166,9 +161,8 @@ KEEP_DB=1 ./test/run.sh   # keep the container for a rerun
 ```
 
 They are integration tests (`node:test`) against the real database: health,
-401 without identity, tailnet/wall identity, a locally signed RS256 Access token
-against an injected key set (wrong `aud`, wrong `iss`, wrong key and garbage all
-rejected), boards CRUD + soft-delete ordering, room save/version/limit,
+401 without identity, login/tailnet/wall identity (login without an email, an
+unknown listener and `X-authentik-*` on the tailnet listener all rejected), boards CRUD + soft-delete ordering, room save/version/limit,
 file roundtrip + limit, `/api/v2/scenes` roundtrip, migration idempotency and
 the 001→002 upgrade path, plus the phase-1 review regressions in
 `test/security.test.js` (content-type coercion, CSRF, wall authorisation,

@@ -77,8 +77,6 @@ STORAGE_TAG=e2e-boards
 BOARDS_PG_NAME=boards
 BOARDS_PG_USER=boards
 BOARDS_PG_PASSWORD=$(openssl rand -hex 24)
-ACCESS_AUD=rehearsal-not-a-real-aud
-ACCESS_TEAM_DOMAIN=euidos.cloudflareaccess.com
 FILE_UPLOAD_MAX_BYTES=4194304
 EOF
 
@@ -86,6 +84,7 @@ EOF
 services:
   web:
     container_name: $project-web
+    networks: !override [default]   # the login-edge network only exists on the host
     ports: !override
       - "127.0.0.1:$port:8081"
     volumes: !override

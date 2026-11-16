@@ -24,8 +24,8 @@
  *
  *   cd euidos/e2e/voice && node live-smoke.mjs [origin]
  *
- * Default origin is the tailnet name (no Cloudflare Access in front; board.euidos.ai would answer 302 to the
- * Access login and there is no headless identity here). @playwright/test resolves from euidos/e2e/node_modules.
+ * Default origin is the tailnet name (no login proxy in front; board.euidos.ai would redirect to the
+ * login server and there is no headless identity here). @playwright/test resolves from euidos/e2e/node_modules.
  *
  * Fails loudly BEFORE launching a browser if the STT server is not warm: an exit code that cannot tell "the app
  * regressed" from "the GPU box was rebooting" is worthless (voice-tool-CLAUDE.md, "Verifying").

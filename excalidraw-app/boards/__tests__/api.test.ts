@@ -213,7 +213,7 @@ describe("error mapping", () => {
     expect(error.message).toBe("Request failed (502)");
   });
 
-  it("a rejected fetch (Access redirect / origin down) is the session error, not a silent failure", async () => {
+  it("a rejected fetch (login redirect / origin down) is the session error, not a silent failure", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
     const error = await fetchBoards().catch((err) => err);

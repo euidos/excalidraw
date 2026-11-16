@@ -12,16 +12,16 @@ Decisions taken (all approved):
    package) is retired when the port lands; its history stays in git.
 2. **Boards are stored by our own service** (`euidos/storage-backend`, Node 22
    + PostgreSQL) on euidos-internal, replacing Firebase.
-3. **Boards are server-readable.** Staff login (Cloudflare Access → Authentik)
+3. **Boards are server-readable.** Staff login (login.euidos.ai, Authentik)
    is the privacy boundary; the per-room key still encrypts the socket relay
    because that code is untouched, and the key is stored with the board.
-4. **Identity comes from the edge**: Access JWT on `board.euidos.ai`,
+4. **Identity comes from the edge**: `X-authentik-email` from the login proxy on `board.euidos.ai`,
    Tailscale Serve headers on the tailnet name; the wall is the anonymous
    "wall". Collaborator name and "created by" are the login email.
 5. **A board = a row in an index** (name, creator, last edit) with open / copy
    link / rename / delete. All boards visible to all staff. **No "show on
    wall"** (deferred by the founder), no per-board permissions, no external
-   sharing (Access blocks it).
+   sharing (the login proxy is staff-only).
 
 Also deferred, needs the founder's go: cutting the wall kiosk over from its
 local static build to the hosted app, and importing today's wall board as
@@ -32,10 +32,10 @@ Platform constraints for everything below: `fleet-infra/docs/internal-platform-n
 ## Architecture
 
 ```
-browser (staff)  ──https──▶ Cloudflare edge ──Access──▶ tunnel euidos-board ─┐
+browser (staff)  ──https──▶ login.euidos.ai proxy (Authentik) ─ login-edge ──┐
 wall / tailnet   ──https──▶ Tailscale Serve (euidos-internal.…ts.net:443) ───┤
                                                                             ▼
-                     nginx `euidos.internal`  (two server blocks: :80 tunnel, :8081 tailnet)
+                     nginx `euidos.internal`  (two server blocks: :80 login, :8081 tailnet)
                        /            static app build (excalidraw-app/build)
                        /api/        storage backend  (euidos/storage-backend, :3000)
                        /socket.io/  excalidraw-room  (relay only, no persistence)
@@ -54,7 +54,7 @@ noted. Errors: `{error, message}` with 4xx/5xx.
 | Route | Purpose |
 | --- | --- |
 | `GET /api/health` | `{ok:true, db:"ok"}` — no auth; `503 {ok:false, db:"error"}` when Postgres is unreachable |
-| `GET /api/me` | `{login, name, via:"access"\|"tailnet"\|"wall"}` |
+| `GET /api/me` | `{login, name, via:"login"\|"tailnet"\|"wall"}` |
 | `GET /api/boards` | `{boards:[{id,name,roomKey,createdBy,createdAt,updatedBy,updatedAt,elementCount}]}` (not deleted, newest edit first); `elementCount` is a stored column (live, non-tombstoned elements), written on every save |
 | `POST /api/boards` `{id,roomKey,name}` | client generates `id`+`roomKey` with the app's `generateCollaborationLinkData()`; 201 board; 409 if id exists |
 | `PATCH /api/boards/:id` `{name}` | rename; **`via:"wall"` → 403** (phase-1 review fix; wall can still read/save the room it displays) |
@@ -78,10 +78,9 @@ does not) —, `files(id text pk, board_id, content_type, bytes bytea, created_a
 SQL files applied at start-up, idempotent.
 
 Identity resolution in the backend, in this order:
-1. `Cf-Access-Jwt-Assertion` present → verify signature (JWKS
-   `https://euidos.cloudflareaccess.com/cdn-cgi/access/certs`, cached), `aud`
-   must equal `ACCESS_AUD` (env), `iss` the team domain → `via:"access"`, login
-   = `email` claim.
+1. `X-Euidos-Listener: login` (nginx's :80 block, reached only by the login
+   server's outpost) + `X-authentik-email` → `via:"login"`, login = the email;
+   that listener without an email → 401.
 2. else `X-Euidos-Listener: tailnet` (set by nginx's :8081 block only; nginx
    strips client copies on both blocks) → `Tailscale-User-Login` if present →
    `via:"tailnet"`; absent (tagged device) → `via:"wall"`, login `wall`.
@@ -94,7 +93,7 @@ committed and NOT pushed). Acceptance below passed 3/3 live against the tailnet 
 review found 2 MUST and 4 SHOULD defects, all fixed and redeployed before this status line was written. Full
 detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,EVIDENCE,RETRO}.local.md`. Still open, needs the founder
 (not an agent): confirm `via:"tailnet"` from an untagged personal device at
-`https://euidos-internal.pony-bellatrix.ts.net/api/me`, and `via:"access"` after a real login at
+`https://euidos-internal.pony-bellatrix.ts.net/api/me`, and `via:"login"` after a real login at
 `https://board.euidos.ai/api/me` — both are proven only up to the edge from agent-accessible boxes.
 
 1. `euidos/storage-backend/`: service + migrations + Dockerfile + tests
@@ -114,8 +113,8 @@ detail: `euidos/casebook/iteration/0.2.0-collab/{DESIGN,EVIDENCE,RETRO}.local.md
 4. Acceptance, from dev-woo against the tailnet origin: two Playwright
    browsers in one `#room=` link — a shape drawn in A appears in B within 2 s;
    both closed and reopened → the shape is still there (loaded from
-   `/api/rooms`); `GET /api/boards` lists it; the public origin answers 302 →
-   Access for `/`, `/api/boards` and `/socket.io/`; `/api/health` ok via both.
+   `/api/rooms`); `GET /api/boards` lists it; the public origin answers a redirect to
+   the login server for `/`, `/api/boards` and `/socket.io/`; `/api/health` ok via both.
 
 ## Phase 2 — voice tool port — MERGED TO MASTER, NOT DEPLOYED (2026-09-18), acceptance 5 pending
 
@@ -248,8 +247,8 @@ run. What landed, as facts for phase 4 and anyone reading this plan later:
   the new identity model actually authored.
 - **The two identity branches (G-P3.5 / G-P3.9), open across all three phases of this iteration.** `via:"tailnet"`
   from the founder's own untagged device at `https://euidos-internal.pony-bellatrix.ts.net/api/me`, and
-  `via:"access"` after a real login at `https://board.euidos.ai/api/me`, are both still proven only up to the
-  header-forgery level — no non-interactive agent session can mint a real Access JWT or run from an untagged
+  `via:"login"` after a real login at `https://board.euidos.ai/api/me`, are both still proven only up to the
+  header-forgery level — no non-interactive agent session can mint a real login session or run from an untagged
   device. This is the 2-minute founder check below, not a task to route around with more agent-side header
   injection.
 - **The phase-1 RETRO L3 restore gate**, now three memos old: either a `/restore` route / admin view lands
@@ -274,7 +273,7 @@ run. What landed, as facts for phase 4 and anyone reading this plan later:
 
 ## Founder test — 2-minute walkthrough on `https://board.euidos.ai`
 
-Do this in a normal browser tab, signed in through Cloudflare Access as usual.
+Do this in a normal browser tab, signed in through login.euidos.ai as usual.
 
 1. Open `https://board.euidos.ai`. **Expect**: a list titled "Boards", not the drawing canvas — your name
    (your email) shown as the signed-in identity, and a "New board" button.
@@ -295,7 +294,7 @@ Do this in a normal browser tab, signed in through Cloudflare Access as usual.
 
 **Two identity checks** (open each in a browser, no special steps):
 
-- `https://board.euidos.ai/api/me` — should answer `{"login":"<your email>","name":"<your name>","via":"access"}`.
+- `https://board.euidos.ai/api/me` — should answer `{"login":"<your email>","name":"<your name>","via":"login"}`.
 - `https://euidos-internal.pony-bellatrix.ts.net/api/me` from your OWN (untagged) device on the tailnet —
   should answer `{"login":"<your email>","name":"<your name>","via":"tailnet"}`, NOT `via:"wall"`. If it says
   `"wall"`, your device is reading as an anonymous tailnet node rather than you personally — worth reporting

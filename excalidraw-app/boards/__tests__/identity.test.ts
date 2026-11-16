@@ -44,9 +44,9 @@ describe("getIdentity", () => {
     await expect(getIdentity()).rejects.toBeTruthy();
 
     fetchMock.mockResolvedValue(
-      response(200, { login: "alice@euidos.ai", name: "Alice", via: "access" }),
+      response(200, { login: "alice@euidos.ai", name: "Alice", via: "login" }),
     );
-    expect((await getIdentity()).via).toBe("access");
+    expect((await getIdentity()).via).toBe("login");
   });
 
   it("treats an unknown `via` as the wall — the restricted identity, never the permissive one", async () => {
@@ -66,7 +66,7 @@ describe("displayNameFor / canManageBoards", () => {
 
   it("shows a signed-in person as their login email", () => {
     expect(
-      displayNameFor({ login: "bob@euidos.ai", name: "Bob", via: "access" }),
+      displayNameFor({ login: "bob@euidos.ai", name: "Bob", via: "login" }),
     ).toBe("bob@euidos.ai");
   });
 
@@ -83,10 +83,10 @@ describe("displayNameFor / canManageBoards", () => {
 
 describe("displayNameFor — 'Wall' is never borrowed", () => {
   it("does not label a signed-in person as the kiosk when the backend tells us nothing", () => {
-    // via:"access" with an empty login/name used to read "Wall", and so did
+    // via:"login" with an empty login/name used to read "Wall", and so did
     // every identity if the backend ever added a third named `via` (normalize
     // fails those closed to "wall" on purpose, for canManageBoards)
-    expect(displayNameFor({ login: "", name: "", via: "access" })).toBe(
+    expect(displayNameFor({ login: "", name: "", via: "login" })).toBe(
       "Unknown",
     );
     expect(displayNameFor({ login: "", name: "Bob", via: "tailnet" })).toBe(

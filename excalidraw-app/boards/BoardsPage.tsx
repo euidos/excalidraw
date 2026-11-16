@@ -544,7 +544,7 @@ export const BoardsPage = () => {
           >
             <div>{list.message}</div>
             {list.session ? (
-              // An expired Access session answers a fetch with a cross-origin
+              // An expired login session answers a fetch with a cross-origin
               // login redirect, which only a DOCUMENT navigation can follow —
               // so retrying the same fetch can never succeed, however often.
               <button

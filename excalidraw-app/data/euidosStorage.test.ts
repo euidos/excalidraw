@@ -363,7 +363,7 @@ describe("euidosStorage — scenes", () => {
     }
   });
 
-  it("marks an unreachable origin (the Access redirect) as a session error", async () => {
+  it("marks an unreachable origin (the login redirect) as a session error", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const error = await saveToFirebase(
       portal(),

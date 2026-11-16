@@ -139,7 +139,7 @@ interface CollabProps {
 }
 
 // euidos: a save that failed because the edge refused the request (an expired
-// Cloudflare Access session on board.euidos.ai, or an unreachable origin) is not
+// login session on board.euidos.ai, or an unreachable origin) is not
 // a transient blip — nothing will be persisted again until the page is
 // reloaded, so it gets its own message and is not hidden by the once-per-message
 // dedupe that keeps ordinary save failures from spamming a modal. It is still

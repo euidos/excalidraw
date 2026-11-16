@@ -61,7 +61,7 @@ const MAX_SAVE_ATTEMPTS = 5;
 
 /**
  * Thrown when the edge refused the request rather than the backend: on
- * board.euidos.ai a Cloudflare Access session expires, and from then on every
+ * board.euidos.ai the login session expires, and from then on every
  * save fails. That is not a transient blip — the user must reload to sign in —
  * so Collab.tsx tells them so instead of showing the generic save error once and
  * letting them keep drawing into a board that is no longer being persisted.
@@ -105,7 +105,7 @@ const SESSION_ERROR_MESSAGE =
 /**
  * Every call to our own origin goes through here so that an expired Access
  * session is always the same, recognisable error. A `fetch` rejection on a
- * same-origin /api path is either the Access login redirect failing the CORS
+ * same-origin /api path is either the login redirect failing the CORS
  * check or the origin being down; both are fixed by reloading.
  */
 const apiFetch = async (path: string, init?: RequestInit) => {

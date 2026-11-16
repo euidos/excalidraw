@@ -79,7 +79,7 @@ It opens a fresh `#room=` link, arms with F9 against Chromium's fake mic (`fixtu
 waits for the words, then INJECTS the litter a crashed session leaves (marker + interim preview + placeholder),
 waits until that has really reached the backend, and reopens the board cold: the words must be there and the
 scaffolding must be gone. Run it after every deploy that touches `excalidraw-app/voice`, `collab/Collab.tsx` or
-the nginx `/stt` block. `board.euidos.ai` is behind Cloudflare Access (302 to the login) and cannot be driven
+the nginx `/stt` block. `board.euidos.ai` is behind the login proxy (redirect to login.euidos.ai) and cannot be driven
 headless — the tailnet origin is the one under test.
 
 One ordering fact the script encodes, because it cost a debugging round: `Collab.initializeRoom()` calls
